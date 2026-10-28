@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "SF Pro", -apple-system-subheadline, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    letter-spacing: -0.012em;
+    background-color: #020617;
+  }
+}
+
+@layer utilities {
+  /* Apple Glass / Vibrancy */
+  .apple-glass {
+    background: rgba(8, 14, 28, 0.76);
+    backdrop-filter: blur(28px) saturate(190%);
+    -webkit-backdrop-filter: blur(28px) saturate(190%);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  }
+
+  .apple-card {
+    background: rgba(255, 255, 255, 0.035);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 14px;
+  }
+
+  .area-tooltip {
+    background: rgba(8, 14, 28, 0.85) !important;
+    backdrop-filter: blur(16px) !important;
+    -webkit-backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.2) !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 11px !important;
+    letter-spacing: -0.01em !important;
+    padding: 3px 8px !important;
+    border-radius: 8px !important;
+    text-align: center !important;
+    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35) !important;
+  }
+
+  .area-tooltip.selected {
+    background: rgba(59, 130, 246, 0.9) !important;
+    border-color: rgba(255, 255, 255, 0.6) !important;
+    color: #ffffff !important;
+    box-shadow: 0 0 16px rgba(59, 130, 246, 0.5) !important;
+  }
+
+  .edge-tooltip {
+    background: rgba(16, 185, 129, 0.9) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.4) !important;
+    color: #ffffff !important;
+    font-weight: 600 !important;
+    font-size: 10px !important;
+    padding: 2px 5px !important;
+    border-radius: 6px !important;
+    white-space: nowrap !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+  }
+
+  .edge-tooltip-wrapper {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    overflow: visible !important;
+    pointer-events: none !important;
+  }
+
+  .edge-tooltip.parallel {
+    background: rgba(8, 14, 28, 0.82) !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.16) !important;
+    color: #f1f5f9 !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    font-size: 9.5px !important;
+    font-weight: 600 !important;
+    padding: 1px 5px !important;
+    border-radius: 5px !important;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35) !important;
+    display: inline-block !important;
+    pointer-events: none !important;
+    user-select: none !important;
+  }
+
+  .edge-tooltip.parallel.road-frontage {
+    background: rgba(217, 119, 6, 0.9) !important;
+    border: 1px solid rgba(254, 240, 138, 0.7) !important;
+    color: #ffffff !important;
+    font-size: 10px !important;
+    font-weight: 700 !important;
+    box-shadow: 0 4px 16px rgba(217, 119, 6, 0.4) !important;
+  }
+
+  /* Apple Slender Scrollbars */
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.16);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
+}
+
+/* Apple-style Leaflet & Geoman Control Buttons */
+.leaflet-bar,
+.leaflet-control-layers,
+.pm-toolbar {
+  border: 1px solid rgba(255, 255, 255, 0.12) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.1) !important;
+  background: rgba(8, 14, 28, 0.78) !important;
+  backdrop-filter: blur(24px) saturate(180%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(180%) !important;
+  overflow: hidden !important;
+}
+
+.leaflet-bar a,
+.pm-toolbar .leaflet-buttons-control-button {
+  background: transparent !important;
+  color: #e2e8f0 !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  transition: all 0.15s ease !important;
+}
+
+.leaflet-bar a:hover,
+.pm-toolbar .leaflet-buttons-control-button:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  color: #ffffff !important;
+}
+
+.leaflet-bar a:last-child,
+.pm-toolbar .leaflet-buttons-control-button:last-child {
+  border-bottom: none !important;
+}
+
+/* Print Optimization for Cadastral Report */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  @page {
+    size: A4 portrait;
+    margin: 10mm;
+  }
+}
+
+

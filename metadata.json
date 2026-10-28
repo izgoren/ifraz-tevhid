@@ -1,0 +1,6 @@
+{
+  "name": "Tevhid ve İfraz Aracı",
+  "description": "Profesyonel harita tabanlı parsel tevhid (birleştirme) ve ifraz (bölme) optimizasyon ve analiz platformu.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
