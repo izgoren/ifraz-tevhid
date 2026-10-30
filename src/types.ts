@@ -39,6 +39,7 @@ export interface SubdivisionConfig {
   roadSnapToleranceM: number; // Yol sınırı algılama & kenetlenme toleransı (metre, örn: 20m)
   autoPerpendicularToRoad: boolean; // Yol çizgisine otomatik dik açı kenetlenmesi
   showRoadFrontageHighlight?: boolean; // Yol cephesi kenarlarını haritada renkli vurgula
+  selectedFrontageEdgeIndices?: number[]; // Çoklu kırık yol cephesi kenar indeksleri
   
   // Constraints (İmar Mevzuatı Kısıtları)
   checkMinFrontage: boolean;
@@ -72,6 +73,9 @@ export interface MapSettings {
   cadModeActive: boolean; // CAD ekranı gibi vertex ve köşe düzenleme modu
   cadActiveTool: 'select' | 'vertex' | 'slice';
   showRoadFrontageHighlight?: boolean;
+  theme: 'dark' | 'light'; // Gece / Gündüz modu
+  uiOpacity: number; // 30 - 100 (%) panel saydamlığı
+  parcelFillOpacity: number; // 0 - 80 (%) parsel dolgu saydamlığı
 }
 
 export interface StatsSummary {

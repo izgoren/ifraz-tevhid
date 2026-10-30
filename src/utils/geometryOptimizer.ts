@@ -417,7 +417,7 @@ export function runSubdivisionProcess(
   config: SubdivisionConfig,
   roadLines: Feature<LineString | MultiPolygon>[] = []
 ): GeneratedParcel[] {
-  if (!mainPoly) return [];
+  if (!mainPoly || !config.pieceCount || config.pieceCount <= 0) return [];
 
   const rowPolygons: { geometry: ParcelGeometry; group: 'single' | 'top' | 'bottom' }[] = [];
 
@@ -594,6 +594,63 @@ export function getMainPolygonEdges(feature: ParcelGeometry | null): ParcelEdge[
       perpAngle
     };
   });
+}
+
+export interface MultiEdgeFrontageInfo {
+  totalLengthM: number;
+  selectedEdges: ParcelEdge[];
+  compositeBearing: number;
+  perpAngle: number;
+}
+
+/**
+ * Calculates total road frontage and composite perpendicular cutting angle
+ * for multiple broken edges ("çoklu kırık").
+ */
+export function calculateMultiEdgeFrontage(
+  allEdges: ParcelEdge[],
+  selectedIndices: number[]
+): MultiEdgeFrontageInfo {
+  if (!allEdges || allEdges.length === 0 || !selectedIndices || selectedIndices.length === 0) {
+    return {
+      totalLengthM: 0,
+      selectedEdges: [],
+      compositeBearing: 0,
+      perpAngle: 0
+    };
+  }
+
+  const selectedEdges = allEdges.filter((e) => selectedIndices.includes(e.index));
+  if (selectedEdges.length === 0) {
+    return {
+      totalLengthM: 0,
+      selectedEdges: [],
+      compositeBearing: 0,
+      perpAngle: 0
+    };
+  }
+
+  const totalLengthM = Math.round(selectedEdges.reduce((sum, e) => sum + e.lengthM, 0) * 10) / 10;
+
+  // Vectorial length-weighted orientation for multi-segment (çoklu kırık) road frontage
+  let sumDx = 0;
+  let sumDy = 0;
+
+  for (const edge of selectedEdges) {
+    const rad = (edge.bearing * Math.PI) / 180;
+    sumDx += edge.lengthM * Math.sin(rad);
+    sumDy += edge.lengthM * Math.cos(rad);
+  }
+
+  let compositeBearing = Math.round(((Math.atan2(sumDx, sumDy) * 180) / Math.PI + 360) % 360);
+  let perpAngle = Math.round(((compositeBearing + 90) % 180 + 180) % 180);
+
+  return {
+    totalLengthM,
+    selectedEdges,
+    compositeBearing,
+    perpAngle
+  };
 }
 
 /**

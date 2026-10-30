@@ -20,14 +20,14 @@ import {
   calculatePerpendicularRoadAngle,
   snapParcelsToRoadBoundary,
   getMainPolygonEdges,
-  ParcelEdge
+  ParcelEdge,
+  calculateMultiEdgeFrontage
 } from './utils/geometryOptimizer';
 import { parseKMLToGeoJSON } from './utils/kmlParser';
 import { exportToCSV, exportToGeoJSON, exportToKML, triggerFileDownload } from './utils/kmlExporter';
-import { Upload } from 'lucide-react';
 
 const DEFAULT_CONFIG: SubdivisionConfig = {
-  pieceCount: 12,
+  pieceCount: 0,
   rotateAngle: 0,
   isDoubleRow: false,
   roadFrontageEdge: 'auto',
@@ -52,7 +52,8 @@ const DEFAULT_CONFIG: SubdivisionConfig = {
   manualRoadCompliance: false,
   roadSnapToleranceM: 20,
   autoPerpendicularToRoad: true,
-  showRoadFrontageHighlight: true
+  showRoadFrontageHighlight: true,
+  selectedFrontageEdgeIndices: []
 };
 
 const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -64,25 +65,41 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   enableDragMerge: true,
   selectModeMerge: true,
   cadModeActive: false,
-  cadActiveTool: 'vertex'
+  cadActiveTool: 'vertex',
+  theme: 'dark',
+  uiOpacity: 78,
+  parcelFillOpacity: 45
+};
+
+const getStoredMapSettings = (): MapSettings => {
+  try {
+    const raw = localStorage.getItem('ifraz_user_settings');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed.mapSettings) {
+        return { ...DEFAULT_MAP_SETTINGS, ...parsed.mapSettings };
+      }
+    }
+  } catch (e) {}
+  return DEFAULT_MAP_SETTINGS;
 };
 
 export default function App() {
   const [mainPolygon, setMainPolygon] = useState<ParcelGeometry | null>(null);
   const [roadLines, setRoadLines] = useState<Feature<LineString>[]>([]);
   const [config, setConfig] = useState<SubdivisionConfig>(DEFAULT_CONFIG);
-  const [mapSettings, setMapSettings] = useState<MapSettings>(DEFAULT_MAP_SETTINGS);
+  const [mapSettings, setMapSettings] = useState<MapSettings>(getStoredMapSettings);
   const [parcels, setParcels] = useState<GeneratedParcel[]>([]);
   const [selectedParcelIds, setSelectedParcelIds] = useState<string[]>([]);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState<boolean>(false);
+  const [isSettingsSaved, setIsSettingsSaved] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
-    'Lütfen başlamak için KML/GeoJSON kadastro dosyası yükleyin veya harita üzerinde poligon/yol çizin.'
+    'Lütfen başlamak için KML/GeoJSON kadastro dosyası yükleyin veya harita üzerinde parsel çizin.'
   );
 
-  // Road Frontage Draw & Edge Selection States
-  const [isDrawingRoadFrontage, setIsDrawingRoadFrontage] = useState<boolean>(false);
+  // Multi-edge Road Frontage Selection States ("Çoklu Kırık")
   const [isSelectingFrontageEdge, setIsSelectingFrontageEdge] = useState<boolean>(false);
-  const [selectedFrontageEdgeIndex, setSelectedFrontageEdgeIndex] = useState<number | null>(null);
+  const [selectedFrontageEdgeIndices, setSelectedFrontageEdgeIndices] = useState<number[]>([]);
 
   // Derived edges of the main cadastral parcel
   const mainPolygonEdges = useMemo(() => getMainPolygonEdges(mainPolygon), [mainPolygon]);
@@ -359,104 +376,116 @@ export default function App() {
     [parcels, config, roadLines, pushUndoState]
   );
 
-  // Road Frontage Drawing Toggle
-  const handleToggleDrawRoadFrontage = useCallback(() => {
-    setIsDrawingRoadFrontage((prev) => {
-      const next = !prev;
-      if (next) {
-        setIsSelectingFrontageEdge(false);
-        setStatusMessage('Harita üzerine tıklayarak yol cephesi hattını çizin. Çizim tamamlanınca çift tıklayın.');
-      }
-      return next;
-    });
-  }, []);
-
-  // Road Frontage Edge Selection Toggle
+  // Road Frontage Multi-Edge Selection Toggle
   const handleToggleSelectFrontageEdge = useCallback(() => {
     setIsSelectingFrontageEdge((prev) => {
       const next = !prev;
       if (next) {
-        setIsDrawingRoadFrontage(false);
-        setStatusMessage('Parselin yol kenarına haritada tıklayarak yol cephesi olarak seçin.');
+        setStatusMessage(
+          'Parselin yol kenarlarına (kırıklarına) harita üzerinden tıklayarak çoklu yol cephesi belirleyin.'
+        );
       }
       return next;
     });
   }, []);
 
-  // Road Frontage Line Creation Handler (Drawn on Map)
-  const handleRoadLineCreated = useCallback(
-    (line: Feature<LineString>) => {
-      setRoadLines((prev) => [...prev, line]);
-      setIsDrawingRoadFrontage(false);
-
-      const coords = line.geometry.coordinates;
-      if (coords.length >= 2) {
-        const p1 = turf.point(coords[0]);
-        const p2 = turf.point(coords[coords.length - 1]);
-        const bearing = turf.rhumbBearing(p1, p2);
-        const perpAngle = Math.round(((bearing + 90) % 180 + 180) % 180);
-
-        pushUndoState(`Yol Cephesi Çizildi (${perpAngle}°)`);
-        const updatedConfig = { ...config, rotateAngle: perpAngle };
-        setConfig(updatedConfig);
-
-        if (mainPolygon) {
-          try {
-            const generated = runSubdivisionProcess(mainPolygon, updatedConfig, [...roadLines, line]);
-            setParcels(generated);
-            setSelectedParcelIds([]);
-            isCadDirtyRef.current = false;
-          } catch (e: any) {
-            console.error('İfraz Hatası:', e);
-          }
-        }
-        setStatusMessage(`Yol cephesi çizildi. İfraz parselleri cepheye dik açıyla (${perpAngle}°) hizalandı.`);
-      }
-    },
-    [config, mainPolygon, roadLines, pushUndoState]
-  );
-
-  // Road Frontage Edge Selected by User
-  const handleSelectFrontageEdge = useCallback(
+  // Road Frontage Multi-Edge ("Çoklu Kırık") Toggle Handler
+  const handleToggleFrontageEdge = useCallback(
     (edgeIndex: number) => {
-      if (edgeIndex === -1) {
-        setIsSelectingFrontageEdge(false);
-        return;
-      }
-      const edges = getMainPolygonEdges(mainPolygon);
-      const edge = edges.find((e) => e.index === edgeIndex);
-      if (!edge) return;
+      setSelectedFrontageEdgeIndices((prev) => {
+        const next = prev.includes(edgeIndex)
+          ? prev.filter((idx) => idx !== edgeIndex)
+          : [...prev, edgeIndex];
 
-      setSelectedFrontageEdgeIndex(edgeIndex);
-      setIsSelectingFrontageEdge(false);
-      pushUndoState(`Yol Cephesi Seçildi (Kenar #${edgeIndex + 1})`);
+        pushUndoState(`Yol Cephesi Güncellendi (${next.length} Kırık Kenar)`);
 
-      const updatedConfig = { ...config, rotateAngle: edge.perpAngle };
-      setConfig(updatedConfig);
+        const multi = calculateMultiEdgeFrontage(mainPolygonEdges, next);
+        if (next.length > 0) {
+          const updatedConfig = {
+            ...config,
+            rotateAngle: multi.perpAngle,
+            selectedFrontageEdgeIndices: next
+          };
+          setConfig(updatedConfig);
 
-      if (mainPolygon) {
-        try {
-          const generated = runSubdivisionProcess(mainPolygon, updatedConfig, roadLines);
-          setParcels(generated);
-          setSelectedParcelIds([]);
-          isCadDirtyRef.current = false;
-        } catch (e: any) {
-          console.error('İfraz Hatası:', e);
+          if (mainPolygon) {
+            try {
+              const generated = runSubdivisionProcess(mainPolygon, updatedConfig, roadLines);
+              setParcels(generated);
+              setSelectedParcelIds([]);
+              isCadDirtyRef.current = false;
+            } catch (e: any) {
+              console.error('İfraz Hatası:', e);
+            }
+          }
+
+          setStatusMessage(
+            `${next.length} adet kırık kenar yol cephesi olarak seçildi (Toplam ${multi.totalLengthM}m, İfraz Açısı: ${multi.perpAngle}°).`
+          );
+        } else {
+          setStatusMessage('Yol cephesi seçimi temizlendi.');
         }
-      }
 
-      setStatusMessage(`Kenar #${edgeIndex + 1} (${edge.lengthM}m) yol cephesi olarak seçildi. İfraz kesim açısı (${edge.perpAngle}°) olarak güncellendi.`);
+        return next;
+      });
     },
-    [config, mainPolygon, roadLines, pushUndoState]
+    [mainPolygonEdges, config, mainPolygon, roadLines, pushUndoState]
   );
 
   // Clear Road Frontage
   const handleClearFrontage = useCallback(() => {
-    setSelectedFrontageEdgeIndex(null);
-    setRoadLines([]);
-    setIsDrawingRoadFrontage(false);
+    setSelectedFrontageEdgeIndices([]);
     setIsSelectingFrontageEdge(false);
     setStatusMessage('Yol cephesi seçimi sıfırlandı.');
+  }, []);
+
+  // Save Settings ("Ayarlarımı Sakla")
+  const handleSaveSettings = useCallback(() => {
+    try {
+      localStorage.setItem(
+        'ifraz_user_settings',
+        JSON.stringify({
+          mapSettings,
+          configPreferences: {
+            selectedProvince: config.selectedProvince,
+            selectedDistrict: config.selectedDistrict,
+            minFrontageVal: config.minFrontageVal,
+            minAreaVal: config.minAreaVal
+          },
+          savedAt: new Date().toISOString()
+        })
+      );
+      setIsSettingsSaved(true);
+      setStatusMessage('Ayarlarınız (Gece/Gündüz, Saydamlık ve Tercihler) başarıyla saklandı.');
+      setTimeout(() => setIsSettingsSaved(false), 3000);
+    } catch (e: any) {
+      console.error('Save settings error:', e);
+    }
+  }, [mapSettings, config]);
+
+  // Reset Settings to Defaults
+  const handleResetSettings = useCallback(() => {
+    try {
+      localStorage.removeItem('ifraz_user_settings');
+      setMapSettings(DEFAULT_MAP_SETTINGS);
+      setIsSettingsSaved(false);
+      setStatusMessage('Ayarlar varsayılan değerlere sıfırlandı.');
+    } catch (e: any) {
+      console.error('Reset settings error:', e);
+    }
+  }, []);
+
+  // Sürükle-Bırak Tevhit Modu Butonu Aç/Kapat
+  const handleToggleDragMerge = useCallback(() => {
+    setMapSettings((prev) => {
+      const next = !prev.enableDragMerge;
+      setStatusMessage(
+        next
+          ? 'Sürükle-Bırak Tevhit Aktif: Birleştirmek istediğiniz bir parseli diğerinin üzerine sürükleyip bırakın.'
+          : 'Sürükle-Bırak Tevhit Modu Kapatıldı.'
+      );
+      return { ...prev, enableDragMerge: next };
+    });
   }, []);
 
   // KML File Upload Handler
@@ -472,8 +501,7 @@ export default function App() {
 
         pushUndoState('KML Dosyası Yüklendi');
         setMainPolygon(parcel);
-        setSelectedFrontageEdgeIndex(null);
-        setIsDrawingRoadFrontage(false);
+        setSelectedFrontageEdgeIndices([]);
         setIsSelectingFrontageEdge(false);
         if (parsedRoads && parsedRoads.length > 0) {
           setRoadLines(parsedRoads);
@@ -553,13 +581,23 @@ export default function App() {
   }, [parcels]);
 
   return (
-    <div className="relative w-screen h-screen overflow-hidden bg-slate-950 font-sans text-slate-100 select-none">
+    <div
+      className={`relative w-screen h-screen overflow-hidden font-sans select-none transition-colors duration-200 ${
+        mapSettings.theme === 'light'
+          ? 'theme-light bg-slate-100 text-slate-900'
+          : 'theme-dark bg-slate-950 text-slate-100'
+      }`}
+      style={{
+        ['--panel-opacity' as any]: (mapSettings.uiOpacity ?? 78) / 100
+      }}
+    >
       {/* Map Element */}
       <MapContainer
         mainPolygon={mainPolygon}
         parcels={parcels}
         roadLines={roadLines}
         mapSettings={mapSettings}
+        onChangeMapSettings={setMapSettings}
         axisConfig={{
           isDoubleRow: config.isDoubleRow,
           axisPosition: config.axisPosition,
@@ -571,41 +609,19 @@ export default function App() {
         onPolygonCreated={(poly) => {
           pushUndoState('Haritada Yeni Parsel Çizildi');
           setMainPolygon(poly);
-          setSelectedFrontageEdgeIndex(null);
+          setSelectedFrontageEdgeIndices([]);
         }}
-        onRoadLineCreated={handleRoadLineCreated}
+        onRoadLineCreated={(line) => setRoadLines((prev) => [...prev, line])}
         onParcelGeometryUpdated={handleParcelGeometryUpdated}
         onParcelSliced={handleParcelSliced}
         onToggleCadMode={(active) => setMapSettings((prev) => ({ ...prev, cadModeActive: active }))}
         onChangeCadTool={(tool) => setMapSettings((prev) => ({ ...prev, cadActiveTool: tool }))}
-        isDrawingRoadFrontage={isDrawingRoadFrontage}
-        onDoneDrawingRoadFrontage={() => setIsDrawingRoadFrontage(false)}
         isSelectingFrontageEdge={isSelectingFrontageEdge}
-        selectedFrontageEdgeIndex={selectedFrontageEdgeIndex}
-        onSelectFrontageEdge={handleSelectFrontageEdge}
+        selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
+        onToggleFrontageEdge={handleToggleFrontageEdge}
+        onDoneSelectingFrontage={() => setIsSelectingFrontageEdge(false)}
+        onToggleDragMerge={handleToggleDragMerge}
       />
-
-      {/* Apple-style Minimal Welcome Card when no parcel is loaded */}
-      {!mainPolygon && (
-        <div className="absolute inset-0 z-[500] flex items-center justify-center bg-slate-950/40 backdrop-blur-md pointer-events-none p-4">
-          <div className="pointer-events-auto apple-glass rounded-3xl p-8 max-w-sm w-full text-center space-y-5 shadow-[0_24px_64px_rgba(0,0,0,0.55)] mx-auto animate-in fade-in zoom-in-95 duration-200">
-            <div className="w-14 h-14 rounded-2xl bg-white/[0.06] border border-white/10 text-blue-400 flex items-center justify-center mx-auto shadow-inner">
-              <Upload className="w-6 h-6 stroke-[1.75]" />
-            </div>
-            <div className="space-y-1.5">
-              <h3 className="text-sm font-semibold text-white tracking-tight">Kadastro Dosyası Yükleyin</h3>
-              <p className="text-xs text-slate-400 leading-relaxed font-normal">
-                KML veya GeoJSON dosyanızı içe aktararak parsel ifraz ve tevhid işlemlerine hemen başlayın ya da harita üzerinde doğrudan çizim yapın.
-              </p>
-            </div>
-            <label className="h-10 px-5 bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white text-xs font-medium rounded-full cursor-pointer flex items-center justify-center gap-2 shadow-[0_4px_16px_rgba(59,130,246,0.35)] transition active:scale-[0.98] w-full">
-              <Upload className="w-4 h-4 stroke-[2]" />
-              <span>KML veya GeoJSON Seç</span>
-              <input type="file" accept=".kml,.geojson,.json" onChange={handleKMLUpload} className="hidden" />
-            </label>
-          </div>
-        </div>
-      )}
 
       {/* Floating Control Panel */}
       <ControlPanel
@@ -632,13 +648,14 @@ export default function App() {
         onRecalculate={handleRecalculate}
         roadLines={roadLines}
         mainPolygonEdges={mainPolygonEdges}
-        selectedFrontageEdgeIndex={selectedFrontageEdgeIndex}
-        isDrawingRoadFrontage={isDrawingRoadFrontage}
+        selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
         isSelectingFrontageEdge={isSelectingFrontageEdge}
-        onToggleDrawRoadFrontage={handleToggleDrawRoadFrontage}
         onToggleSelectFrontageEdge={handleToggleSelectFrontageEdge}
-        onSelectFrontageEdge={handleSelectFrontageEdge}
+        onToggleFrontageEdge={handleToggleFrontageEdge}
         onClearFrontage={handleClearFrontage}
+        onSaveSettings={handleSaveSettings}
+        onResetSettings={handleResetSettings}
+        isSettingsSaved={isSettingsSaved}
       />
 
       {/* Official Zoning & Cadastral Print / PDF Report Modal */}

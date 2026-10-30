@@ -7,7 +7,7 @@ import * as turf from '@turf/turf';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, ParcelGeometry } from '../types';
 import { getParcelVertices, ParcelVertex, getMainPolygonEdges, ParcelEdge } from '../utils/geometryOptimizer';
-import { Scissors, Move, Check, Crosshair, Table, X, Compass, Navigation } from 'lucide-react';
+import { Scissors, Move, Check, Crosshair, Table, X, Compass, Navigation, Layers, PenTool, Trash2, Spline, Shapes, Droplets } from 'lucide-react';
 
 interface MapContainerProps {
   mainPolygon: ParcelGeometry | null;
@@ -24,11 +24,12 @@ interface MapContainerProps {
   onParcelSliced?: (parcelId: string, sliceLine: Feature<LineString>) => void;
   onToggleCadMode?: (active: boolean) => void;
   onChangeCadTool?: (tool: 'select' | 'vertex' | 'slice') => void;
-  isDrawingRoadFrontage?: boolean;
-  onDoneDrawingRoadFrontage?: () => void;
   isSelectingFrontageEdge?: boolean;
-  selectedFrontageEdgeIndex?: number | null;
-  onSelectFrontageEdge?: (edgeIndex: number) => void;
+  selectedFrontageEdgeIndices?: number[];
+  onToggleFrontageEdge?: (edgeIndex: number) => void;
+  onDoneSelectingFrontage?: () => void;
+  onToggleDragMerge?: () => void;
+  onChangeMapSettings?: (newSettings: MapSettings) => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -46,11 +47,12 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onParcelSliced,
   onToggleCadMode,
   onChangeCadTool,
-  isDrawingRoadFrontage = false,
-  onDoneDrawingRoadFrontage,
   isSelectingFrontageEdge = false,
-  selectedFrontageEdgeIndex = null,
-  onSelectFrontageEdge
+  selectedFrontageEdgeIndices = [],
+  onToggleFrontageEdge,
+  onDoneSelectingFrontage,
+  onToggleDragMerge,
+  onChangeMapSettings
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -62,6 +64,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
 
   const [showVertexTable, setShowVertexTable] = useState(false);
+  const [activeDrawTool, setActiveDrawTool] = useState<'polygon' | 'line' | 'delete' | null>(null);
+  const [showOpacityPopover, setShowOpacityPopover] = useState(false);
 
   // Active parcel for CAD Vertex Table
   const cadActiveParcel = useMemo(() => {
@@ -144,32 +148,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         console.warn('Geoman setLang hatası:', langErr);
       }
 
-      // Add Geoman drawing controls (top-right)
-      map.pm.addControls({
-        position: 'topright',
-        drawPolygon: true,
-        drawPolyline: true,
-        drawMarker: false,
-        drawCircleMarker: false,
-        drawRectangle: false,
-        drawCircle: false,
-        editMode: true,
-        dragMode: false,
-        cutPolygon: false,
-        removalMode: true
+      // Track Geoman drawing and removal states
+      map.on('pm:drawend', () => {
+        setActiveDrawTool((prev) => (prev === 'delete' ? prev : null));
       });
-
-      // Ensure Turkish titles on DOM buttons directly
-      setTimeout(() => {
-        const polyBtn = document.querySelector('.leaflet-buttons-control-button a.leaflet-pm-icon-polygon, .leaflet-pm-icon-polygon')?.parentElement;
-        if (polyBtn) polyBtn.setAttribute('title', 'Parsel / Poligon Çiz');
-        const lineBtn = document.querySelector('.leaflet-buttons-control-button a.leaflet-pm-icon-polyline, .leaflet-pm-icon-polyline')?.parentElement;
-        if (lineBtn) lineBtn.setAttribute('title', 'İmar Yolu / Çizgi Çiz');
-        const editBtn = document.querySelector('.leaflet-buttons-control-button a.leaflet-pm-icon-edit, .leaflet-pm-icon-edit')?.parentElement;
-        if (editBtn) editBtn.setAttribute('title', 'Katmanları / Köşeleri Düzenle');
-        const deleteBtn = document.querySelector('.leaflet-buttons-control-button a.leaflet-pm-icon-delete, .leaflet-pm-icon-delete')?.parentElement;
-        if (deleteBtn) deleteBtn.setAttribute('title', 'Katman / Parsel Sil');
-      }, 250);
+      map.on('pm:globalremovalmodetoggled', (e: any) => {
+        setActiveDrawTool(e.enabled ? 'delete' : null);
+      });
 
       // Handle Geoman drawing completion
       map.on('pm:create', (e: any) => {
@@ -203,9 +188,6 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         }
 
         if (e.shape === 'Line' || e.shape === 'Polyline') {
-          if (isDrawingRoadFrontage && onDoneDrawingRoadFrontage) {
-            onDoneDrawingRoadFrontage();
-          }
           if (onRoadLineCreated && geo.geometry.type === 'LineString') {
             onRoadLineCreated(geo as Feature<LineString>);
           }
@@ -215,6 +197,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           }
         }
 
+        setActiveDrawTool(null);
+        map.pm.disableDraw();
         map.removeLayer(e.layer);
       });
 
@@ -225,32 +209,24 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       const mapElem = document.getElementById('map-element');
       if (mapElem) resizeObserver.observe(mapElem);
     }
-  }, [onPolygonCreated, onRoadLineCreated, mapSettings.cadModeActive, mapSettings.cadActiveTool, cadActiveParcel, parcels, onParcelSliced, isDrawingRoadFrontage, onDoneDrawingRoadFrontage]);
+  }, [onPolygonCreated, onRoadLineCreated, mapSettings.cadModeActive, mapSettings.cadActiveTool, cadActiveParcel, parcels, onParcelSliced]);
 
-  // Handle Road Frontage Drawing & CAD Slice Tool Activation in Map
+  // Handle CAD Slice Tool Activation in Map
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    if (isDrawingRoadFrontage) {
-      map.pm.enableDraw('Line', {
-        snappable: true,
-        snapDistance: 20,
-        tooltips: true,
-        templineStyle: { color: '#f59e0b', dashArray: '8, 8', weight: 4 },
-        hintlineStyle: { color: '#f59e0b', dashArray: '4, 4', weight: 2 }
-      });
-    } else if (mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice') {
+    if (mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice') {
       map.pm.enableDraw('Line', {
         snappable: true,
         snapDistance: 20,
         tooltips: true,
         templineStyle: { color: '#ef4444', dashArray: '6, 6', weight: 3 }
       });
-    } else {
+    } else if (!activeDrawTool) {
       map.pm.disableDraw();
     }
-  }, [isDrawingRoadFrontage, mapSettings.cadModeActive, mapSettings.cadActiveTool]);
+  }, [mapSettings.cadModeActive, mapSettings.cadActiveTool, activeDrawTool]);
 
   // Update Tile Layer
   useEffect(() => {
@@ -344,7 +320,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
     const edges = getMainPolygonEdges(mainPolygon);
     edges.forEach((edge) => {
-      const isSelected = selectedFrontageEdgeIndex === edge.index;
+      const isSelected = selectedFrontageEdgeIndices.includes(edge.index);
       const isSelecting = isSelectingFrontageEdge;
 
       // Only draw if selecting mode is active, or if this edge is selected
@@ -358,43 +334,50 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       const polyline = L.polyline(latlngs, {
         pane: 'roadPane',
         color: isSelected ? '#f59e0b' : '#38bdf8',
-        weight: isSelected ? 6 : 4,
+        weight: isSelected ? 6.5 : 4,
         dashArray: isSelected ? undefined : '6, 6',
         opacity: isSelected ? 1 : 0.85
       }).addTo(frontageEdgeGroupRef.current!);
 
       if (isSelecting) {
-        polyline.bindTooltip(`Tıkla: Yol Cephesi Yap (#${edge.index + 1} - ${edge.lengthM}m)`, {
-          sticky: true,
-          direction: 'top',
-          className: 'bg-slate-900/90 text-white font-semibold text-[11px] px-2 py-1 rounded-md border border-sky-400'
-        });
+        polyline.bindTooltip(
+          isSelected
+            ? `Seçili Yol Cephesi: Çıkarmak için tıkla (#${edge.index + 1} - ${edge.lengthM}m)`
+            : `Tıkla: Çoklu Yol Cephesine Ekle (#${edge.index + 1} - ${edge.lengthM}m)`,
+          {
+            sticky: true,
+            direction: 'top',
+            className: isSelected
+              ? 'bg-amber-500 text-slate-950 font-bold text-[11px] px-2 py-1 rounded-md border border-amber-300 shadow'
+              : 'bg-slate-900/90 text-white font-semibold text-[11px] px-2 py-1 rounded-md border border-sky-400 shadow'
+          }
+        );
 
         polyline.on('mouseover', () => {
-          polyline.setStyle({ weight: 7, color: '#f59e0b', opacity: 1 });
+          polyline.setStyle({ weight: 7.5, color: isSelected ? '#d97706' : '#f59e0b', opacity: 1 });
         });
         polyline.on('mouseout', () => {
           polyline.setStyle({
-            weight: isSelected ? 6 : 4,
+            weight: isSelected ? 6.5 : 4,
             color: isSelected ? '#f59e0b' : '#38bdf8',
             opacity: isSelected ? 1 : 0.85
           });
         });
         polyline.on('click', (e) => {
           L.DomEvent.stopPropagation(e);
-          if (onSelectFrontageEdge) {
-            onSelectFrontageEdge(edge.index);
+          if (onToggleFrontageEdge) {
+            onToggleFrontageEdge(edge.index);
           }
         });
       } else if (isSelected) {
-        polyline.bindTooltip(`🛣️ Seçili Yol Cephesi (#${edge.index + 1} - ${edge.lengthM}m)`, {
+        polyline.bindTooltip(`🛣️ Yol Cephesi #${edge.index + 1} (${edge.lengthM}m)`, {
           permanent: true,
           direction: 'center',
           className: 'bg-amber-500 text-slate-950 font-bold text-[10px] px-2 py-0.5 rounded shadow-lg border border-amber-300'
         });
       }
     });
-  }, [mainPolygon, isSelectingFrontageEdge, selectedFrontageEdgeIndex, onSelectFrontageEdge]);
+  }, [mainPolygon, isSelectingFrontageEdge, selectedFrontageEdgeIndices, onToggleFrontageEdge]);
 
   // Render Axis Line for Double Row
   useEffect(() => {
@@ -454,7 +437,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           color: strokeColor,
           weight: isSelected || mapSettings.cadModeActive ? 3.5 : 2,
           fillColor: fillColor,
-          fillOpacity: mapSettings.showFill ? (isSelected ? 0.75 : 0.45) : 0,
+          fillOpacity: mapSettings.showFill ? (isSelected ? 0.75 : ((mapSettings.parcelFillOpacity !== undefined ? mapSettings.parcelFillOpacity / 100 : 0.45))) : 0,
           dashArray: mapSettings.cadModeActive ? '4, 2' : undefined
         }
       }).addTo(piecesLayerGroupRef.current);
@@ -616,46 +599,426 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     onParcelGeometryUpdated
   ]);
 
+  const handleToggleDrawPolygon = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (activeDrawTool === 'polygon') {
+      map.pm.disableDraw();
+      setActiveDrawTool(null);
+    } else {
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+      if (mapSettings.cadModeActive && onToggleCadMode) onToggleCadMode(false);
+      map.pm.enableDraw('Polygon', {
+        snappable: true,
+        snapDistance: 20,
+        tooltips: true,
+        finishOn: 'dblclick'
+      });
+      setActiveDrawTool('polygon');
+    }
+  };
+
+  const handleToggleDrawLine = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (activeDrawTool === 'line') {
+      map.pm.disableDraw();
+      setActiveDrawTool(null);
+    } else {
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+      if (mapSettings.cadModeActive && onToggleCadMode) onToggleCadMode(false);
+      map.pm.enableDraw('Line', {
+        snappable: true,
+        snapDistance: 20,
+        tooltips: true
+      });
+      setActiveDrawTool('line');
+    }
+  };
+
+  const handleToggleRemovalMode = () => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (activeDrawTool === 'delete') {
+      map.pm.disableGlobalRemovalMode();
+      setActiveDrawTool(null);
+    } else {
+      map.pm.disableDraw();
+      if (mapSettings.cadModeActive && onToggleCadMode) onToggleCadMode(false);
+      map.pm.enableGlobalRemovalMode();
+      setActiveDrawTool('delete');
+    }
+  };
+
+  const handleToggleCadVertex = () => {
+    const map = mapRef.current;
+    if (map) {
+      map.pm.disableDraw();
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+    }
+    setActiveDrawTool(null);
+    const nextActive = !mapSettings.cadModeActive;
+    if (onToggleCadMode) onToggleCadMode(nextActive);
+    if (nextActive && onChangeCadTool) onChangeCadTool('vertex');
+  };
+
+  const handleToggleCadSlice = () => {
+    const map = mapRef.current;
+    if (map) {
+      map.pm.disableDraw();
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+    }
+    setActiveDrawTool(null);
+    if (!mapSettings.cadModeActive) {
+      if (onToggleCadMode) onToggleCadMode(true);
+    }
+    if (onChangeCadTool) {
+      onChangeCadTool(mapSettings.cadActiveTool === 'slice' && mapSettings.cadModeActive ? 'vertex' : 'slice');
+    }
+  };
+
   return (
     <div className="relative w-full h-full">
       <div id="map-element" className="w-full h-full bg-slate-900" />
 
-      {/* Floating Status Bar for Road Frontage Draw / Select */}
-      {(isDrawingRoadFrontage || isSelectingFrontageEdge) && (
+      {/* Floating Status Bar for Multi-Edge (Çoklu Kırık) Road Frontage Select */}
+      {isSelectingFrontageEdge && (
         <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] h-10 px-4 bg-amber-500 text-slate-950 font-semibold rounded-full flex items-center gap-3 shadow-[0_12px_36px_rgba(245,158,11,0.4)] animate-in fade-in slide-in-from-top-2">
-          {isDrawingRoadFrontage ? (
-            <>
-              <div className="flex items-center gap-2 text-xs">
-                <Navigation className="w-4 h-4 stroke-[2.5] animate-pulse" />
-                <span>Yol Cephesi Çizimi Aktif: Haritaya tıklayarak yol hattını çizin</span>
-              </div>
-              {onDoneDrawingRoadFrontage && (
-                <button
-                  onClick={onDoneDrawingRoadFrontage}
-                  className="w-5 h-5 rounded-full bg-black/20 hover:bg-black/30 flex items-center justify-center transition ml-1"
-                  title="İptal Et"
-                >
-                  <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                </button>
+          <div className="flex items-center gap-2 text-xs">
+            <Compass className="w-4 h-4 stroke-[2.5] animate-pulse" />
+            <span>
+              Çoklu Kırık Cephe Seçimi:{' '}
+              {selectedFrontageEdgeIndices.length > 0 ? (
+                <strong className="font-extrabold underline">{selectedFrontageEdgeIndices.length} Kırık Kenar Seçildi</strong>
+              ) : (
+                'Parselin yol kenarlarına haritada tıklayın'
               )}
-            </>
-          ) : (
-            <>
-              <div className="flex items-center gap-2 text-xs">
-                <Compass className="w-4 h-4 stroke-[2.5] animate-pulse" />
-                <span>Yol Cephesi Seçimi Aktif: Parselin yol kenarına haritada tıklayın</span>
-              </div>
-              {onSelectFrontageEdge && (
-                <button
-                  onClick={() => onSelectFrontageEdge(-1)}
-                  className="w-5 h-5 rounded-full bg-black/20 hover:bg-black/30 flex items-center justify-center transition ml-1"
-                  title="İptal Et"
-                >
-                  <X className="w-3.5 h-3.5 stroke-[2.5]" />
-                </button>
-              )}
-            </>
+            </span>
+          </div>
+          {onDoneSelectingFrontage && (
+            <button
+              onClick={onDoneSelectingFrontage}
+              className="h-6 px-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 active:scale-95 text-[11px] font-bold rounded-full flex items-center gap-1 transition ml-1 shadow-sm"
+              title="Seçimi Tamamla"
+            >
+              <Check className="w-3 h-3 stroke-[3]" />
+              <span>Tamam</span>
+            </button>
           )}
+        </div>
+      )}
+
+      {/* Sağ Taraf: CAD Araçları İçerisine Gruplanmış Çizim ve CAD Araç Çubuğu */}
+      <div className="absolute top-4 right-4 z-[1000] flex flex-col p-2 apple-glass rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-right-2 duration-200 w-44">
+        {/* Header */}
+        <div className="flex items-center justify-between px-1.5 py-1 border-b border-white/[0.08] mb-1.5">
+          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+            <PenTool className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+            <span>CAD & Çizim</span>
+          </div>
+          {(activeDrawTool || mapSettings.cadModeActive || mapSettings.enableDragMerge) && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          )}
+        </div>
+
+        {/* Grup 1: Çizim Araçları */}
+        <div className="space-y-1">
+          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+            Çizim Araçları
+          </div>
+
+          {/* Parsel / Poligon Çiz */}
+          <button
+            onClick={handleToggleDrawPolygon}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              activeDrawTool === 'polygon'
+                ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="Haritada yeni parsel veya poligon çizin (Bitirmek için ilk noktaya veya çift tıklayın)"
+          >
+            <div className="flex items-center gap-1.5">
+              <Shapes className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'polygon' ? 'text-white' : 'text-blue-400'}`} />
+              <span className="text-[11px]">Parsel Çiz</span>
+            </div>
+            {activeDrawTool === 'polygon' && (
+              <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
+                ÇİZİLİYOR
+              </span>
+            )}
+          </button>
+
+          {/* İmar Yolu / Çizgi Çiz */}
+          <button
+            onClick={handleToggleDrawLine}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              activeDrawTool === 'line'
+                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="Harita üzerine imar yolu veya referans çizgisi çizin"
+          >
+            <div className="flex items-center gap-1.5">
+              <Spline className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'line' ? 'text-slate-950' : 'text-amber-400'}`} />
+              <span className="text-[11px]">Yol Çiz</span>
+            </div>
+            {activeDrawTool === 'line' && (
+              <span className="text-[9px] bg-amber-600 text-slate-950 px-1.5 py-0.5 rounded font-bold">
+                ÇİZİLİYOR
+              </span>
+            )}
+          </button>
+
+          {/* Katman / Parsel Sil */}
+          <button
+            onClick={handleToggleRemovalMode}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              activeDrawTool === 'delete'
+                ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="Silme modu: Silmek istediğiniz parsel veya çizgiye haritada tıklayın"
+          >
+            <div className="flex items-center gap-1.5">
+              <Trash2 className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'delete' ? 'text-white' : 'text-rose-400'}`} />
+              <span className="text-[11px]">Sil</span>
+            </div>
+            {activeDrawTool === 'delete' && (
+              <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
+                AKTİF
+              </span>
+            )}
+          </button>
+        </div>
+
+        <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
+
+        {/* Grup 2: CAD & Tevhit Araçları */}
+        <div className="space-y-1">
+          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+            CAD & Tevhit
+          </div>
+
+          {/* CAD Köşe Düzenle */}
+          <button
+            onClick={handleToggleCadVertex}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'
+                ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
+                : mapSettings.cadModeActive
+                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="CAD Köşe Düzenleme Modu (Vertex Edit): Parsel köşelerini sürükleyerek şekillendirin"
+          >
+            <div className="flex items-center gap-1.5">
+              <Crosshair className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' ? 'text-slate-950' : 'text-emerald-400'}`} />
+              <span className="text-[11px]">CAD Düzenle</span>
+            </div>
+            {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' && (
+              <span className="text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded font-bold">
+                AÇIK
+              </span>
+            )}
+          </button>
+
+          {/* CAD Bıçağı */}
+          <button
+            onClick={handleToggleCadSlice}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice'
+                ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="CAD Bıçağı: Parselin üzerinden geçen serbest çizgi çizerek bölün"
+          >
+            <div className="flex items-center gap-1.5">
+              <Scissors className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' ? 'text-white' : 'text-rose-400'}`} />
+              <span className="text-[11px]">CAD Bıçağı</span>
+            </div>
+            {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' && (
+              <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
+                AÇIK
+              </span>
+            )}
+          </button>
+
+          {/* Sürükle-Bırak Tevhit */}
+          <button
+            onClick={() => {
+              if (onToggleDragMerge) onToggleDragMerge();
+            }}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              mapSettings.enableDragMerge
+                ? 'bg-purple-600 text-white font-bold shadow-md shadow-purple-600/30 border border-purple-400/40'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title={
+              mapSettings.enableDragMerge
+                ? 'Sürükle-Bırak Tevhit Aktif: Birleştirmek için parseli diğerinin üzerine sürükleyin'
+                : 'Sürükle-Bırak Tevhit Modunu Aç'
+            }
+          >
+            <div className="flex items-center gap-1.5">
+              <Layers className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.enableDragMerge ? 'text-white' : 'text-purple-400'}`} />
+              <span className="text-[11px]">Sürükle Tevhit</span>
+            </div>
+            {mapSettings.enableDragMerge && (
+              <span className="text-[9px] bg-purple-900/90 text-purple-200 px-1.5 py-0.5 rounded font-bold">
+                AÇIK
+              </span>
+            )}
+          </button>
+
+          {/* Köşe Koordinatları Tablosu */}
+          <button
+            onClick={() => setShowVertexTable((prev) => !prev)}
+            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+              showVertexTable
+                ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
+                : 'text-slate-300 hover:text-white hover:bg-white/10'
+            }`}
+            title="Seçili Parsel Köşe Koordinatları Tablosunu Göster/Gizle"
+          >
+            <div className="flex items-center gap-1.5">
+              <Table className={`w-3.5 h-3.5 stroke-[2] ${showVertexTable ? 'text-white' : 'text-blue-400'}`} />
+              <span className="text-[11px]">Koordinatlar</span>
+            </div>
+            {showVertexTable && (
+              <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
+                AÇIK
+              </span>
+            )}
+          </button>
+
+          {/* Parsel Dolgu Saydamlığı Butonu */}
+          <div className="relative">
+            <button
+              onClick={() => setShowOpacityPopover((prev) => !prev)}
+              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                showOpacityPopover
+                  ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
+                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+              }`}
+              title="Parsel Dolgu Saydamlığını Değiştir (Saydam / Opak)"
+            >
+              <div className="flex items-center gap-1.5">
+                <Droplets className={`w-3.5 h-3.5 stroke-[2] ${showOpacityPopover ? 'text-slate-950' : 'text-emerald-400'}`} />
+                <span className="text-[11px]">Dolgu Saydamlığı</span>
+              </div>
+              <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                showOpacityPopover ? 'bg-slate-950/20 text-slate-950' : 'text-emerald-400 bg-emerald-500/10'
+              }`}>
+                %{mapSettings.parcelFillOpacity ?? 45}
+              </span>
+            </button>
+
+            {/* Apple-Glass Popover Slider for Fill Opacity */}
+            {showOpacityPopover && (
+              <div className="absolute right-full top-0 mr-2 z-[1100] w-60 apple-glass rounded-2xl p-3 shadow-2xl border border-white/10 text-white space-y-2.5 animate-in fade-in slide-in-from-right-1 duration-150">
+                <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                    <Droplets className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
+                    <span>Parsel Dolgu Saydamlığı</span>
+                  </div>
+                  <span className="text-xs font-mono font-bold text-emerald-400">
+                    %{mapSettings.parcelFillOpacity ?? 45}
+                  </span>
+                </div>
+
+                <input
+                  type="range"
+                  min={0}
+                  max={85}
+                  value={mapSettings.parcelFillOpacity ?? 45}
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value) || 0;
+                    if (onChangeMapSettings) {
+                      onChangeMapSettings({ ...mapSettings, parcelFillOpacity: val, showFill: val > 0 });
+                    }
+                  }}
+                  className="w-full h-1.5 bg-white/10 rounded-full accent-emerald-500 cursor-pointer"
+                />
+
+                <div className="grid grid-cols-4 gap-1 pt-1">
+                  {[
+                    { label: '%0', val: 0, title: 'Saydam (Sadece Çerçeve)' },
+                    { label: '%25', val: 25, title: 'Hafif' },
+                    { label: '%45', val: 45, title: 'Dengeli' },
+                    { label: '%75', val: 75, title: 'Yoğun' }
+                  ].map((preset) => (
+                    <button
+                      key={preset.val}
+                      onClick={() => {
+                        if (onChangeMapSettings) {
+                          onChangeMapSettings({ ...mapSettings, parcelFillOpacity: preset.val, showFill: preset.val > 0 });
+                        }
+                      }}
+                      className={`text-[10px] py-1 rounded-lg font-mono transition border ${
+                        (mapSettings.parcelFillOpacity ?? 45) === preset.val
+                          ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-400 shadow-sm'
+                          : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
+                      }`}
+                      title={preset.title}
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Aktif Çizim / Silme Bilgilendirme Rozeti */}
+      {activeDrawTool && (
+        <div className="absolute top-16 right-52 z-[990] h-8 px-3.5 bg-slate-900/90 backdrop-blur-xl border border-white/20 text-white text-xs font-medium rounded-full flex items-center gap-2 shadow-lg animate-in fade-in slide-in-from-top-1">
+          <div
+            className={`w-2 h-2 rounded-full animate-pulse ${
+              activeDrawTool === 'polygon'
+                ? 'bg-blue-400'
+                : activeDrawTool === 'line'
+                ? 'bg-amber-400'
+                : 'bg-rose-400'
+            }`}
+          />
+          <span>
+            {activeDrawTool === 'polygon' &&
+              'Parsel Çizimi Aktif: Haritada köşeleri belirleyin, bitirmek için ilk noktaya veya çift tıklayın.'}
+            {activeDrawTool === 'line' &&
+              'İmar Yolu Çizimi Aktif: Haritada güzergahı tıklayın, bitirmek için çift tıklayın.'}
+            {activeDrawTool === 'delete' &&
+              'Silme Modu Aktif: Silmek istediğiniz parsel veya çizgiye haritada tıklayın.'}
+          </span>
+          <button
+            onClick={() => {
+              const map = mapRef.current;
+              if (map) {
+                map.pm.disableDraw();
+                if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+              }
+              setActiveDrawTool(null);
+            }}
+            className="ml-1 text-slate-400 hover:text-white text-[11px] underline"
+          >
+            İptal
+          </button>
+        </div>
+      )}
+
+      {/* Sürükle-Bırak Tevhit Aktif Bilgilendirme Rozeti */}
+      {mapSettings.enableDragMerge && (
+        <div className="absolute top-16 right-44 z-[990] h-8 px-3.5 bg-purple-950/85 backdrop-blur-xl border border-purple-500/40 text-purple-200 text-xs font-medium rounded-full flex items-center gap-2 shadow-lg shadow-purple-900/30 animate-in fade-in slide-in-from-top-1">
+          <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
+          <span>Sürükle-Bırak Tevhit Aktif: Parseli diğerinin üzerine bırakın</span>
+          <button
+            onClick={() => onToggleDragMerge && onToggleDragMerge()}
+            className="ml-1 text-purple-300 hover:text-white"
+            title="Kapat"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
         </div>
       )}
 
@@ -710,6 +1073,21 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             <Table className="w-3 h-3 stroke-[2]" />
             <span>Koordinatlar</span>
           </button>
+          {/* Dolgu Saydamlığı Toggle */}
+          <button
+            onClick={() => {
+              if (onChangeMapSettings) {
+                const current = mapSettings.parcelFillOpacity ?? 45;
+                const nextVal = current === 0 ? 25 : current === 25 ? 45 : current === 45 ? 75 : 0;
+                onChangeMapSettings({ ...mapSettings, parcelFillOpacity: nextVal, showFill: nextVal > 0 });
+              }
+            }}
+            className="h-7 px-2.5 rounded-full text-xs font-medium transition flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-white/10"
+            title={`Parsel Dolgu Saydamlığı: %${mapSettings.parcelFillOpacity ?? 45} (Tıklayarak döngüsel değiştir)`}
+          >
+            <Droplets className="w-3 h-3 stroke-[2] text-emerald-400" />
+            <span>Dolgu %{mapSettings.parcelFillOpacity ?? 45}</span>
+          </button>
 
           <div className="h-4 w-px bg-white/10" />
 
@@ -725,7 +1103,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       )}
 
       {/* Floating CAD Vertex Coordinate Table (Apple Window Style) */}
-      {mapSettings.cadModeActive && showVertexTable && cadActiveParcel && (
+      {showVertexTable && cadActiveParcel && (
         <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] w-[520px] max-w-[95vw] apple-glass rounded-2xl p-4 shadow-[0_24px_64px_rgba(0,0,0,0.6)] border border-white/10 text-xs space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
           <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
             <div className="flex items-center gap-2 font-medium text-white">

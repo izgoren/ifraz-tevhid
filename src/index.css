@@ -11,19 +11,54 @@
 }
 
 @layer utilities {
-  /* Apple Glass / Vibrancy */
+  /* Apple Glass / Vibrancy with dynamic transparency and theme support */
   .apple-glass {
-    background: rgba(8, 14, 28, 0.76);
+    background: rgba(8, 14, 28, var(--panel-opacity, 0.78));
     backdrop-filter: blur(28px) saturate(190%);
     -webkit-backdrop-filter: blur(28px) saturate(190%);
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .theme-light .apple-glass {
+    background: rgba(255, 255, 255, var(--panel-opacity, 0.88));
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+    color: #0f172a;
   }
 
   .apple-card {
     background: rgba(255, 255, 255, 0.035);
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 14px;
+    transition: background 0.2s ease, border-color 0.2s ease;
+  }
+
+  .theme-light .apple-card {
+    background: rgba(0, 0, 0, 0.035);
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    color: #0f172a;
+  }
+
+  .theme-light .leaflet-bar,
+  .theme-light .leaflet-control-layers,
+  .theme-light .pm-toolbar {
+    background: rgba(255, 255, 255, 0.88) !important;
+    border-color: rgba(0, 0, 0, 0.12) !important;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.15) !important;
+  }
+
+  .theme-light .leaflet-bar a,
+  .theme-light .pm-toolbar .leaflet-buttons-control-button {
+    color: #0f172a !important;
+    border-bottom: 1px solid rgba(0, 0, 0, 0.08) !important;
+  }
+
+  .theme-light .leaflet-bar a:hover,
+  .theme-light .pm-toolbar .leaflet-buttons-control-button:hover {
+    background: rgba(0, 0, 0, 0.06) !important;
+    color: #000000 !important;
   }
 
   .area-tooltip {
