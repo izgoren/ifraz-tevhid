@@ -4,6 +4,9 @@ import * as turf from '@turf/turf';
 import { MapContainer } from './components/MapContainer';
 import { ControlPanel } from './components/ControlPanel';
 import { PrintReportModal } from './components/PrintReportModal';
+import { DraggableBaseMapControl } from './components/DraggableBaseMapControl';
+import { OfflineIndicator } from './components/OfflineIndicator';
+import { Info } from 'lucide-react';
 import {
   GeneratedParcel,
   MapSettings,
@@ -25,6 +28,7 @@ import {
 } from './utils/geometryOptimizer';
 import { parseKMLToGeoJSON } from './utils/kmlParser';
 import { exportToCSV, exportToGeoJSON, exportToKML, triggerFileDownload } from './utils/kmlExporter';
+import { CadastralInfo, deriveCadastralLocation } from './utils/cadastralLocation';
 
 const DEFAULT_CONFIG: SubdivisionConfig = {
   pieceCount: 0,
@@ -62,7 +66,7 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   showNames: true,
   showAreas: true,
   showEdgeLengths: true,
-  enableDragMerge: true,
+  enableDragMerge: false,
   selectModeMerge: true,
   cadModeActive: false,
   cadActiveTool: 'vertex',
@@ -77,7 +81,7 @@ const getStoredMapSettings = (): MapSettings => {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed.mapSettings) {
-        return { ...DEFAULT_MAP_SETTINGS, ...parsed.mapSettings };
+        return { ...DEFAULT_MAP_SETTINGS, ...parsed.mapSettings, enableDragMerge: false };
       }
     }
   } catch (e) {}
@@ -96,6 +100,17 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState<string>(
     'Lütfen başlamak için KML/GeoJSON kadastro dosyası yükleyin veya harita üzerinde parsel çizin.'
   );
+
+  // Real Cadastral & Location Metadata (İl, İlçe, Mahalle, Ada, Parsel)
+  const [cadastralInfo, setCadastralInfo] = useState<CadastralInfo>({
+    il: 'Ankara',
+    ilce: 'Gölbaşı',
+    mahalle: 'İncek / Hacılar',
+    adaNo: '1042',
+    parselNo: '18',
+    mevkii: 'Köy İçi',
+    nitelik: 'Arsa / Tarla'
+  });
 
   // Multi-edge Road Frontage Selection States ("Çoklu Kırık")
   const [isSelectingFrontageEdge, setIsSelectingFrontageEdge] = useState<boolean>(false);
@@ -206,18 +221,18 @@ export default function App() {
       const invalidCount = generated.filter((p) => !p.isValid).length;
       if (invalidCount > 0) {
         setStatusMessage(
-          `${generated.length} Parsel Oluşturuldu (${invalidCount} adedi seçili ${config.selectedProvince}/${config.selectedDistrict} mevzuatını ihlal ediyor).`
+          `${generated.length} Parsel Oluşturuldu (${invalidCount} adedi asgari cephe/alan sınırını sağlamıyor).`
         );
       } else {
         setStatusMessage(
-          `${generated.length} Adet İfraz Parseli Hesaplandı (${config.selectedProvince} İmar Standartlarına Tam Uyumlu).`
+          `${generated.length} Adet İfraz Parseli Hesaplandı (${cadastralInfo.il} / ${cadastralInfo.ilce} • Ada: ${cadastralInfo.adaNo}, Parsel: ${cadastralInfo.parselNo}).`
         );
       }
     } catch (e: any) {
       console.error('İfraz Hatası:', e);
       setStatusMessage(`Hesaplama Hatası: ${e.message}`);
     }
-  }, [mainPolygon, config, roadLines]);
+  }, [mainPolygon, config, roadLines, cadastralInfo]);
 
   // Recalculate / Update Subdivision explicitly
   const handleRecalculate = useCallback(() => {
@@ -497,7 +512,7 @@ export default function App() {
     reader.onload = (evt) => {
       try {
         const text = evt.target?.result as string;
-        const { parcel, roadLines: parsedRoads } = parseKMLToGeoJSON(text);
+        const { parcel, roadLines: parsedRoads, cadastralInfo: extracted } = parseKMLToGeoJSON(text, file.name);
 
         pushUndoState('KML Dosyası Yüklendi');
         setMainPolygon(parcel);
@@ -505,10 +520,15 @@ export default function App() {
         setIsSelectingFrontageEdge(false);
         if (parsedRoads && parsedRoads.length > 0) {
           setRoadLines(parsedRoads);
-          setStatusMessage(`Harita Dosyası Yüklendi (${file.name}) — ${parsedRoads.length} adet Yol Cephesi Çizgisi Tespit Edildi.`);
-        } else {
-          setStatusMessage(`Harita Dosyası Yüklendi (${file.name}).`);
         }
+
+        // Derive real location & cadastral info from parsed metadata and coordinates
+        deriveCadastralLocation(parcel, extracted).then((loc) => {
+          setCadastralInfo(loc);
+          setStatusMessage(
+            `Kadastro Yüklendi (${file.name}): ${loc.il} / ${loc.ilce} • ${loc.mahalle} (Ada: ${loc.adaNo}, Parsel: ${loc.parselNo})`
+          );
+        });
       } catch (err: any) {
         alert(`Dosya Ayrıştırma Hatası: ${err.message}`);
       }
@@ -610,6 +630,10 @@ export default function App() {
           pushUndoState('Haritada Yeni Parsel Çizildi');
           setMainPolygon(poly);
           setSelectedFrontageEdgeIndices([]);
+          deriveCadastralLocation(poly).then((loc) => {
+            setCadastralInfo(loc);
+            setStatusMessage(`Çizilen Konum: ${loc.il} / ${loc.ilce} • ${loc.mahalle} (Ada: ${loc.adaNo}, Parsel: ${loc.parselNo})`);
+          });
         }}
         onRoadLineCreated={(line) => setRoadLines((prev) => [...prev, line])}
         onParcelGeometryUpdated={handleParcelGeometryUpdated}
@@ -658,7 +682,7 @@ export default function App() {
         isSettingsSaved={isSettingsSaved}
       />
 
-      {/* Official Zoning & Cadastral Print / PDF Report Modal */}
+      {/* Official Cadastral Print / PDF Report Modal */}
       <PrintReportModal
         isOpen={isPrintModalOpen}
         onClose={() => setIsPrintModalOpen(false)}
@@ -666,7 +690,48 @@ export default function App() {
         parcels={parcels}
         roadLines={roadLines}
         config={config}
+        cadastralInfo={cadastralInfo}
+        onUpdateCadastralInfo={setCadastralInfo}
       />
+
+      {/* Draggable Base Map (Altlık Harita) Button in Bottom-Right Corner */}
+      <DraggableBaseMapControl
+        mapSettings={mapSettings}
+        onChangeMapSettings={setMapSettings}
+      />
+
+      {/* Dynamic Status / Bilgi Barı (Alt Ekran Apple-Glass Dinamik Ada) */}
+      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[990] max-w-[94vw] md:max-w-2xl px-4 py-2 apple-glass rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/15 text-slate-200 text-xs flex items-center gap-2.5 pointer-events-auto backdrop-blur-2xl transition-all duration-300 select-none">
+        <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)] animate-pulse shrink-0" />
+        
+        {/* Kadastro Konum Çipi (İl, İlçe, Mahalle, Ada, Parsel) */}
+        <div className="flex items-center gap-1.5 truncate text-[11px] shrink-0">
+          <span className="font-semibold text-white">{cadastralInfo.il} / {cadastralInfo.ilce}</span>
+          <span className="text-slate-500">•</span>
+          <span className="text-slate-300 truncate max-w-[130px]" title={cadastralInfo.mahalle}>{cadastralInfo.mahalle}</span>
+          <span className="text-slate-500">•</span>
+          <span className="text-amber-400 font-mono font-bold">Ada: {cadastralInfo.adaNo}</span>
+          <span className="text-amber-400 font-mono font-bold">Parsel: {cadastralInfo.parselNo}</span>
+        </div>
+
+        <div className="h-3 w-px bg-white/20 shrink-0" />
+
+        {/* Mesaj & Durum */}
+        <span className="truncate font-medium text-slate-300 text-[11px]">
+          {statusMessage || 'Sistem Hazır'}
+        </span>
+        {parcels.length > 0 && (
+          <>
+            <div className="h-3 w-px bg-white/20 shrink-0" />
+            <span className="text-[11px] font-mono text-emerald-400 font-semibold shrink-0">
+              {parcels.length} Parsel
+            </span>
+          </>
+        )}
+      </div>
+
+      {/* PWA Offline Mode Indicator */}
+      <OfflineIndicator />
     </div>
   );
 }

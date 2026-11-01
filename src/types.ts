@@ -1,6 +1,37 @@
-import type { Feature, Polygon, MultiPolygon } from 'geojson';
+import type { Feature, Polygon, MultiPolygon, LineString } from 'geojson';
 
 export type ParcelGeometry = Feature<Polygon | MultiPolygon>;
+
+export interface LoadedCadastralParcel {
+  id: string;
+  fileId: string;
+  fileName: string;
+  name: string;
+  geometry: ParcelGeometry;
+  cadastralInfo: {
+    il: string;
+    ilce: string;
+    mahalle: string;
+    adaNo: string;
+    parselNo: string;
+    mevkii?: string;
+    nitelik?: string;
+    tapuAlaniM2?: number;
+    source?: 'file' | 'location' | 'manual';
+  };
+  rawProperties: Record<string, string>;
+  areaM2: number;
+  isActive: boolean;
+}
+
+export interface LoadedCadastralFile {
+  id: string;
+  fileName: string;
+  uploadTime: string;
+  fileSize?: number;
+  parcels: LoadedCadastralParcel[];
+  roadLines: Feature<LineString>[];
+}
 
 export interface GeneratedParcel {
   id: string;
@@ -63,7 +94,7 @@ export interface SubdivisionConfig {
 }
 
 export interface MapSettings {
-  tileProvider: 'googleHybrid' | 'googleSatellite';
+  tileProvider: 'googleHybrid' | 'googleSatellite' | 'osm';
   showFill: boolean;
   showNames: boolean;
   showAreas: boolean;

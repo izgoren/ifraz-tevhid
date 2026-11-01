@@ -13,13 +13,17 @@ import {
   RefreshCw
 } from 'lucide-react';
 
+import { CadastralInfo } from '../utils/cadastralLocation';
+
 interface PrintReportModalProps {
   isOpen: boolean;
   onClose: () => void;
   mainPolygon: ParcelGeometry | null;
   parcels: GeneratedParcel[];
   roadLines: Feature<LineString>[];
-  config: SubdivisionConfig;
+  config?: SubdivisionConfig;
+  cadastralInfo?: CadastralInfo;
+  onUpdateCadastralInfo?: (info: CadastralInfo) => void;
 }
 
 export const PrintReportModal: React.FC<PrintReportModalProps> = ({
@@ -28,12 +32,29 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
   mainPolygon,
   parcels,
   roadLines,
-  config
+  cadastralInfo,
+  onUpdateCadastralInfo
 }) => {
-  const [adaNo, setAdaNo] = useState('1042');
-  const [parselNo, setParselNo] = useState('18');
-  const [mahalle, setMahalle] = useState('Cumhuriyet Mah.');
+  const [il, setIl] = useState(cadastralInfo?.il || 'Ankara');
+  const [ilce, setIlce] = useState(cadastralInfo?.ilce || 'Gölbaşı');
+  const [mahalle, setMahalle] = useState(cadastralInfo?.mahalle || 'Merkez Mah.');
+  const [adaNo, setAdaNo] = useState(cadastralInfo?.adaNo || '1042');
+  const [parselNo, setParselNo] = useState(cadastralInfo?.parselNo || '18');
+  const [mevkii, setMevkii] = useState(cadastralInfo?.mevkii || 'Köy İçi');
+  const [nitelik, setNitelik] = useState(cadastralInfo?.nitelik || 'Arsa / Tarla');
   const [showEditDrawer, setShowEditDrawer] = useState(false);
+
+  React.useEffect(() => {
+    if (cadastralInfo) {
+      if (cadastralInfo.il) setIl(cadastralInfo.il);
+      if (cadastralInfo.ilce) setIlce(cadastralInfo.ilce);
+      if (cadastralInfo.mahalle) setMahalle(cadastralInfo.mahalle);
+      if (cadastralInfo.adaNo) setAdaNo(cadastralInfo.adaNo);
+      if (cadastralInfo.parselNo) setParselNo(cadastralInfo.parselNo);
+      if (cadastralInfo.mevkii) setMevkii(cadastralInfo.mevkii);
+      if (cadastralInfo.nitelik) setNitelik(cadastralInfo.nitelik);
+    }
+  }, [cadastralInfo]);
 
   const currentDate = useMemo(() => {
     return new Intl.DateTimeFormat('tr-TR', { dateStyle: 'long' }).format(new Date());
@@ -231,35 +252,96 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
         </div>
       </div>
 
-      {/* Quick Edit Drawer for Ada / Parsel - Hidden during print */}
+      {/* Quick Edit Drawer for Cadastral Details (İl, İlçe, Mahalle, Ada, Parsel, Mevkii, Nitelik) */}
       {showEditDrawer && (
         <div className="no-print w-full max-w-4xl apple-glass rounded-2xl p-4 shadow-xl mb-4 text-white border border-white/10 animate-in fade-in slide-in-from-top-2 duration-150">
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+          <div className="text-[11px] font-semibold text-amber-400 mb-2 flex items-center justify-between">
+            <span>Kadastro & Parsel Bilgilerini Düzenle</span>
+            <span className="text-[10px] text-slate-400 font-normal">Yüklenen dosya ve koordinat verilerinden otomatik aktarılmıştır</span>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2 text-xs">
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">İl</label>
+              <input
+                type="text"
+                value={il}
+                onChange={(e) => {
+                  setIl(e.target.value);
+                  onUpdateCadastralInfo?.({ il: e.target.value, ilce, mahalle, adaNo, parselNo, mevkii, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">İlçe</label>
+              <input
+                type="text"
+                value={ilce}
+                onChange={(e) => {
+                  setIlce(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce: e.target.value, mahalle, adaNo, parselNo, mevkii, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Mahalle / Köy</label>
+              <input
+                type="text"
+                value={mahalle}
+                onChange={(e) => {
+                  setMahalle(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce, mahalle: e.target.value, adaNo, parselNo, mevkii, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">Ada No</label>
               <input
                 type="text"
                 value={adaNo}
-                onChange={(e) => setAdaNo(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                onChange={(e) => {
+                  setAdaNo(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce, mahalle, adaNo: e.target.value, parselNo, mevkii, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
               />
             </div>
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Kök Parsel No</label>
+              <label className="text-[10px] text-slate-400 block mb-1">Parsel No</label>
               <input
                 type="text"
                 value={parselNo}
-                onChange={(e) => setParselNo(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                onChange={(e) => {
+                  setParselNo(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce, mahalle, adaNo, parselNo: e.target.value, mevkii, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
               />
             </div>
             <div>
-              <label className="text-[10px] text-slate-400 block mb-1">Mahalle / Mevkii</label>
+              <label className="text-[10px] text-slate-400 block mb-1">Mevkii</label>
               <input
                 type="text"
-                value={mahalle}
-                onChange={(e) => setMahalle(e.target.value)}
-                className="w-full bg-black/40 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white"
+                value={mevkii}
+                onChange={(e) => {
+                  setMevkii(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce, mahalle, adaNo, parselNo, mevkii: e.target.value, nitelik });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-400 block mb-1">Nitelik</label>
+              <input
+                type="text"
+                value={nitelik}
+                onChange={(e) => {
+                  setNitelik(e.target.value);
+                  onUpdateCadastralInfo?.({ il, ilce, mahalle, adaNo, parselNo, mevkii, nitelik: e.target.value });
+                }}
+                className="w-full bg-black/40 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white"
               />
             </div>
           </div>
@@ -287,11 +369,17 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
               <div className="text-xs text-slate-600 mt-0.5 font-medium flex items-center gap-2 flex-wrap">
                 <span className="font-bold text-amber-700">İZGÖREN HARİTA MÜHENDİSLİK</span>
                 <span>•</span>
-                <span>{config.selectedProvince} / {config.selectedDistrict}</span>
+                <span>{il} / {ilce}</span>
                 <span>•</span>
                 <span>{mahalle}</span>
                 <span>•</span>
                 <span className="font-mono">Ada: <strong>{adaNo}</strong> | Kök Parsel: <strong>{parselNo}</strong></span>
+                {mevkii && (
+                  <>
+                    <span>•</span>
+                    <span>Mevkii: <strong>{mevkii}</strong></span>
+                  </>
+                )}
               </div>
             </div>
 
@@ -299,7 +387,7 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
             <div className="flex items-center gap-3 text-[11px] font-mono text-slate-700 bg-slate-50 border border-slate-200 px-3 py-1.5 rounded-lg shrink-0">
               <span className="flex items-center gap-1.5">
                 <span className="w-3 h-3 bg-amber-500 inline-block rounded-sm"></span>
-                <span>İmar Yolu</span>
+                <span>Yol Sınırı</span>
               </span>
               <span className="flex items-center gap-1.5">
                 <span className="w-3 h-3 border border-slate-700 bg-white inline-block rounded-sm"></span>
@@ -337,8 +425,10 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
                 <span className="text-[9px] font-mono text-amber-800 font-bold">HKMO TESCİLLİ</span>
               </div>
               <div className="space-y-0.5 text-[9.5px] font-mono text-slate-600">
-                <div>İl / İlçe: <strong className="text-slate-900">{config.selectedProvince} / {config.selectedDistrict}</strong></div>
+                <div>İl / İlçe: <strong className="text-slate-900">{il} / {ilce}</strong></div>
+                <div>Mahalle / Mevkii: <strong className="text-slate-900">{mahalle} • {mevkii}</strong></div>
                 <div>Ada / Parsel: <strong className="text-slate-900">{adaNo} / {parselNo}</strong></div>
+                <div>Nitelik: <strong className="text-slate-900">{nitelik}</strong></div>
                 <div>Toplam Alan: <strong className="text-slate-900">{totalAreaM2.toFixed(1)} m²</strong> ({parcels.length} Parsel)</div>
                 <div>Tarih: <strong className="text-slate-900">{currentDate}</strong></div>
               </div>
@@ -473,7 +563,7 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
           <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono mt-3 pt-2 border-t border-slate-200">
             <span>İzgören Harita Mühendislik ve Müşavirlik Bürosu</span>
             <span>Toplam {parcels.length} İfraz Parseli | {totalAreaM2.toFixed(1)} m²</span>
-            <span>3194 s.k. m.15/16 ve Planlı Alanlar İmar Yönetmeliği</span>
+            <span>Kadastro Parselasyon ve Tescile Esas Uygulama Krokisi</span>
           </div>
 
         </div>

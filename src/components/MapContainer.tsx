@@ -5,9 +5,30 @@ import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import * as turf from '@turf/turf';
 import type { Feature, LineString } from 'geojson';
-import { GeneratedParcel, MapSettings, ParcelGeometry } from '../types';
+import { GeneratedParcel, MapSettings, ParcelGeometry, LoadedCadastralParcel } from '../types';
 import { getParcelVertices, ParcelVertex, getMainPolygonEdges, ParcelEdge } from '../utils/geometryOptimizer';
-import { Scissors, Move, Check, Crosshair, Table, X, Compass, Navigation, Layers, PenTool, Trash2, Spline, Shapes, Droplets } from 'lucide-react';
+import {
+  Scissors,
+  Move,
+  Check,
+  Crosshair,
+  Table,
+  X,
+  Compass,
+  Navigation,
+  Layers,
+  PenTool,
+  Trash2,
+  Spline,
+  Shapes,
+  Droplets,
+  Eye,
+  ChevronRight,
+  Hash,
+  Ruler,
+  Maximize2,
+  TableProperties
+} from 'lucide-react';
 
 interface MapContainerProps {
   mainPolygon: ParcelGeometry | null;
@@ -30,6 +51,11 @@ interface MapContainerProps {
   onDoneSelectingFrontage?: () => void;
   onToggleDragMerge?: () => void;
   onChangeMapSettings?: (newSettings: MapSettings) => void;
+  onOpenAttributeDrawer?: () => void;
+  loadedParcelsCount?: number;
+  isAttributeDrawerOpen?: boolean;
+  secondaryParcels?: LoadedCadastralParcel[];
+  onSelectActiveParcel?: (parcel: LoadedCadastralParcel) => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -52,10 +78,16 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onToggleFrontageEdge,
   onDoneSelectingFrontage,
   onToggleDragMerge,
-  onChangeMapSettings
+  onChangeMapSettings,
+  onOpenAttributeDrawer,
+  loadedParcelsCount,
+  isAttributeDrawerOpen,
+  secondaryParcels = [],
+  onSelectActiveParcel
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const secondaryParcelsGroupRef = useRef<L.LayerGroup | null>(null);
   const piecesLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const edgeLabelsGroupRef = useRef<L.LayerGroup | null>(null);
   const axisLineLayerRef = useRef<L.LayerGroup | null>(null);
@@ -240,17 +272,17 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     let newTileLayer: L.Layer;
 
     switch (mapSettings.tileProvider) {
-      case 'googleHybrid':
-        newTileLayer = L.layerGroup([
-          L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { maxZoom: 28, maxNativeZoom: 20 }),
-          L.tileLayer('https://mt1.google.com/vt/lyrs=h&x={x}&y={y}&z={z}', { maxZoom: 28, maxNativeZoom: 20 })
-        ]);
-        break;
       case 'googleSatellite':
         newTileLayer = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
           maxZoom: 28,
           maxNativeZoom: 20,
           attribution: 'Google Satellite'
+        });
+        break;
+      case 'osm':
+        newTileLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: 'OpenStreetMap'
         });
         break;
       case 'googleHybrid':
@@ -969,6 +1001,80 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             )}
           </div>
         </div>
+
+        <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
+
+        {/* Grup 3: Görünürlük Katmanları (Bara Sıralı Sabitlenmiş) */}
+        <div className="space-y-1">
+          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+            <span>Görünürlük</span>
+            <Eye className="w-3 h-3 text-blue-400" />
+          </div>
+
+          {[
+            {
+              key: 'showFill',
+              label: 'Dolgu',
+              title: 'Parsel Dolgularını Aç / Kapat',
+              icon: Droplets,
+              activeColor: 'text-emerald-400'
+            },
+            {
+              key: 'showNames',
+              label: 'Parsel No',
+              title: 'Parsel Numaralarını Aç / Kapat',
+              icon: Hash,
+              activeColor: 'text-blue-400'
+            },
+            {
+              key: 'showAreas',
+              label: 'Alan (m²)',
+              title: 'Parsel Alanlarını Aç / Kapat',
+              icon: Maximize2,
+              activeColor: 'text-amber-400'
+            },
+            {
+              key: 'showEdgeLengths',
+              label: 'Kenar (m)',
+              title: 'Kenar Ölçülerini Aç / Kapat',
+              icon: Ruler,
+              activeColor: 'text-purple-400'
+            }
+          ].map((item) => {
+            const isChecked = !!(mapSettings as any)[item.key];
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.key}
+                onClick={() => {
+                  if (onChangeMapSettings) {
+                    onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
+                  }
+                }}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  isChecked
+                    ? 'bg-white/15 text-white font-semibold border border-white/10 shadow-sm'
+                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.05]'
+                }`}
+                title={item.title}
+              >
+                <div className="flex items-center gap-1.5">
+                  <Icon className={`w-3.5 h-3.5 stroke-[2] ${isChecked ? item.activeColor : 'text-slate-500'}`} />
+                  <span className="text-[11px]">{item.label}</span>
+                </div>
+                <span
+                  className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                    isChecked
+                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                      : 'text-slate-500 bg-white/[0.03]'
+                  }`}
+                >
+                  {isChecked ? 'AÇIK' : 'KAPALI'}
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Aktif Çizim / Silme Bilgilendirme Rozeti */}
@@ -1104,7 +1210,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       {/* Floating CAD Vertex Coordinate Table (Apple Window Style) */}
       {showVertexTable && cadActiveParcel && (
-        <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-[1000] w-[520px] max-w-[95vw] apple-glass rounded-2xl p-4 shadow-[0_24px_64px_rgba(0,0,0,0.6)] border border-white/10 text-xs space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-[1000] w-[520px] max-w-[95vw] apple-glass rounded-2xl p-4 shadow-[0_24px_64px_rgba(0,0,0,0.6)] border border-white/10 text-xs space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
           <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
             <div className="flex items-center gap-2 font-medium text-white">
               <Table className="w-4 h-4 text-blue-400 stroke-[1.75]" />

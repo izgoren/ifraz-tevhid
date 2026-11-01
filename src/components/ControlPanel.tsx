@@ -3,30 +3,24 @@ import {
   Undo,
   Redo,
   FolderOpen,
-  Upload,
   Layers,
   Scissors,
   Download,
-  Settings2,
   ChevronLeft,
   FileSpreadsheet,
-  Info,
   Compass,
-  Crosshair,
-  Ruler,
-  Check,
   Printer,
-  Sparkles,
   Navigation,
   RefreshCw,
-  PenTool,
   X,
-  MousePointerClick,
   Sun,
   Moon,
   Sliders,
   Save,
-  RotateCcw
+  RotateCcw,
+  SaveAll,
+  Hash,
+  Columns
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -50,8 +44,8 @@ interface ControlPanelProps {
   onExportGeoJSON: () => void;
   onExportCSV: () => void;
   onReset: () => void;
-  onUpdateParcelAttributes: (parcelId: string, updatedFields: Partial<GeneratedParcel>) => void;
-  statusMessage: string;
+  onUpdateParcelAttributes: (parcelId: string, attrs: any) => void;
+  statusMessage?: string;
   onOpenPrintModal?: () => void;
   onRecalculate?: () => void;
   roadLines?: Feature<LineString>[];
@@ -81,22 +75,24 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onExportKML,
   onExportGeoJSON,
   onExportCSV,
-  statusMessage,
+  onReset,
   onOpenPrintModal,
   onRecalculate,
-  roadLines = [],
   mainPolygonEdges = [],
   selectedFrontageEdgeIndices = [],
   isSelectingFrontageEdge = false,
   onToggleSelectFrontageEdge,
-  onToggleFrontageEdge,
   onClearFrontage,
   onSaveSettings,
   onResetSettings,
   isSettingsSaved = false
 }) => {
   const [panelOpen, setPanelOpen] = useState(true);
-  const [activeTab, setActiveTab] = useState<'params' | 'layers' | 'settings'>('params');
+  const [showSaveAsMenu, setShowSaveAsMenu] = useState(false);
+  const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showPiecePopover, setShowPiecePopover] = useState(false);
+  const [showAnglePopover, setShowAnglePopover] = useState(false);
+  const [showDoubleRowPopover, setShowDoubleRowPopover] = useState(false);
 
   const handleConfigChange = <K extends keyof SubdivisionConfig>(key: K, value: SubdivisionConfig[K]) => {
     onChangeConfig({ ...config, [key]: value });
@@ -111,8 +107,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   return (
     <>
-      {/* Apple Dynamic Island Floating Action Bar */}
+      {/* ================= APPLE DYNAMIC ISLAND TOP ACTION BAR ================= */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] h-11 px-3.5 apple-glass rounded-full flex items-center gap-2 text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.45)] transition-all animate-in fade-in slide-in-from-top-2 duration-200">
+        {/* Undo / Redo */}
         <button
           onClick={onUndo}
           disabled={!canUndo}
@@ -131,52 +128,234 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           <Redo className="w-3.5 h-3.5 stroke-[1.75]" />
         </button>
 
-        {/* Kadastro Dosyası Aç (KML / GeoJSON) Klasör Simgesi */}
+        {/* Kadastro Dosyası Aç (Birden Çok KML / GeoJSON Seçilebilir) */}
         <label
           className="w-7 h-7 rounded-full flex items-center justify-center hover:bg-white/10 active:bg-white/15 cursor-pointer transition text-amber-400 hover:text-amber-300"
-          title="Kadastro Dosyası Aç (KML / GeoJSON)"
+          title="Kadastro Dosyaları Aç (Birden Çok KML / GeoJSON Seçebilirsiniz)"
         >
           <FolderOpen className="w-3.5 h-3.5 stroke-[1.75]" />
           <input
             type="file"
+            multiple
             accept=".kml,.geojson,.json"
             onChange={onKMLUpload}
             className="hidden"
           />
         </label>
 
-        <div className="h-3.5 w-px bg-white/15 mx-0.5" />
+        {/* Farklı Kaydet & Dışa Aktar Butonu */}
+        <div className="relative">
+          <button
+            onClick={() => setShowSaveAsMenu((prev) => !prev)}
+            className={`w-7 h-7 rounded-full flex items-center justify-center transition ${
+              showSaveAsMenu
+                ? 'bg-blue-500 text-white shadow-sm'
+                : 'hover:bg-white/10 active:bg-white/15 text-blue-400 hover:text-blue-300'
+            }`}
+            title="Farklı Kaydet & Dışa Aktar (PDF, KML, GeoJSON, CSV)"
+          >
+            <SaveAll className="w-3.5 h-3.5 stroke-[1.75]" />
+          </button>
 
-        <div className="flex items-center gap-2 px-1 text-xs font-medium tracking-tight text-slate-200">
-          <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
-          <span>İfraz & Tevhid</span>
+          {/* Farklı Kaydet Menüsü */}
+          {showSaveAsMenu && (
+            <div className="absolute top-full left-0 mt-2 z-[1100] w-64 apple-glass rounded-2xl p-2 shadow-2xl border border-white/15 text-slate-100 space-y-1 animate-in fade-in slide-in-from-top-1 duration-150">
+              <div className="px-2.5 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-white/[0.08] mb-1 flex items-center justify-between">
+                <span>Farklı Kaydet & Rapor</span>
+                <button
+                  onClick={() => setShowSaveAsMenu(false)}
+                  className="text-slate-400 hover:text-white p-0.5 rounded-full hover:bg-white/10"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+              {onOpenPrintModal && (
+                <button
+                  onClick={() => {
+                    setShowSaveAsMenu(false);
+                    onOpenPrintModal();
+                  }}
+                  className="w-full bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 hover:text-white text-xs py-2 px-2.5 rounded-xl flex items-center justify-between border border-blue-500/30 transition text-left"
+                >
+                  <span className="flex items-center gap-2">
+                    <Printer className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+                    <span>Uygulama Krokisi (A4)</span>
+                  </span>
+                  <span className="text-[10px] bg-blue-500/30 text-blue-200 px-1.5 py-0.5 rounded font-mono">PDF</span>
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setShowSaveAsMenu(false);
+                  onExportKML();
+                }}
+                className="w-full hover:bg-white/10 text-slate-200 hover:text-white text-xs py-2 px-2.5 rounded-xl flex items-center justify-between transition text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <Download className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
+                  <span>Google Earth KML</span>
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">.kml</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowSaveAsMenu(false);
+                  onExportGeoJSON();
+                }}
+                className="w-full hover:bg-white/10 text-slate-200 hover:text-white text-xs py-2 px-2.5 rounded-xl flex items-center justify-between transition text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <Download className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
+                  <span>CBS GeoJSON</span>
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">.geojson</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowSaveAsMenu(false);
+                  onExportCSV();
+                }}
+                className="w-full hover:bg-white/10 text-slate-200 hover:text-white text-xs py-2 px-2.5 rounded-xl flex items-center justify-between transition text-left"
+              >
+                <span className="flex items-center gap-2">
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+                  <span>Koordinat Tablosu</span>
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">.csv</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="h-3.5 w-px bg-white/15 mx-0.5" />
 
-        {/* Yazdır Butonu */}
+        <div className="flex items-center gap-2 px-1 text-xs font-medium tracking-tight text-slate-200">
+          <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
+          <span>İfraz</span>
+        </div>
+
+        <div className="h-3.5 w-px bg-white/15 mx-0.5" />
+
+        {/* Hızlı Yazdır Butonu */}
         {onOpenPrintModal && (
           <button
             onClick={onOpenPrintModal}
             className="h-8 px-3.5 bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-medium rounded-full flex items-center gap-1.5 transition active:scale-95 border border-white/10 shadow-sm"
-            title="İfraz ve Tevhid Uygulama Krokisi Yazıcı Çıktısı Al"
+            title="Hızlı Yazdır (A4 Uygulama Krokisi Çıktısı Al)"
           >
             <Printer className="w-3.5 h-3.5 text-slate-300 stroke-[1.75]" />
-            <span>Yazdır</span>
+            <span>Hızlı Yazdır</span>
           </button>
         )}
 
-        {/* BÜYÜK İFRAZ BUTONU */}
-        {onRecalculate && (
+        {/* Ayarlar Menüsü Butonu */}
+        <div className="relative">
           <button
-            onClick={onRecalculate}
-            className="h-8 px-4 bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white text-xs font-bold tracking-wider rounded-full flex items-center gap-1.5 transition active:scale-95 shadow-[0_2px_14px_rgba(59,130,246,0.5)] border border-blue-400/30"
-            title="İfraz hesaplamasını yeniden çalıştır ve parselleri oluştur"
+            onClick={() => setShowSettingsMenu((prev) => !prev)}
+            className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
+              showSettingsMenu
+                ? 'bg-blue-500 text-white font-bold border-blue-400 shadow-sm'
+                : 'bg-white/10 hover:bg-white/15 text-slate-200 hover:text-white border-white/10'
+            }`}
+            title="Sistem ve Görünüm Ayarları"
           >
-            <RefreshCw className="w-3.5 h-3.5 stroke-[2.5]" />
-            <span className="text-xs uppercase font-extrabold tracking-wider">İFRAZ</span>
+            <Sliders className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+            <span>Ayarlar</span>
           </button>
-        )}
+
+          {/* Ayarlar Popover Menüsü */}
+          {showSettingsMenu && (
+            <div className="absolute top-full right-0 mt-2 z-[1100] w-72 apple-glass rounded-2xl p-3.5 shadow-2xl border border-white/15 text-slate-100 space-y-3 animate-in fade-in slide-in-from-top-1 duration-150">
+              <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
+                <div className="flex items-center gap-1.5 text-xs font-semibold text-white">
+                  <Sliders className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+                  <span>Sistem & Görünüm Ayarları</span>
+                </div>
+                <button
+                  onClick={() => setShowSettingsMenu(false)}
+                  className="w-5 h-5 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+
+              {/* Görünüm & Tema: Gece / Gündüz */}
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Tema</label>
+                <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] grid grid-cols-2 gap-1.5">
+                  <button
+                    onClick={() => handleSettingChange('theme', 'dark')}
+                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
+                      mapSettings.theme === 'dark'
+                        ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
+                    }`}
+                  >
+                    <Moon className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+                    <span>Gece Modu</span>
+                  </button>
+                  <button
+                    onClick={() => handleSettingChange('theme', 'light')}
+                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
+                      mapSettings.theme === 'light'
+                        ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
+                    }`}
+                  >
+                    <Sun className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
+                    <span>Gündüz Modu</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Menü & Panel Saydamlığı */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-[11px] text-slate-300 font-medium">Panel Saydamlığı:</span>
+                  <span className="font-mono text-blue-400 font-bold">%{mapSettings.uiOpacity ?? 78}</span>
+                </div>
+                <input
+                  type="range"
+                  min={35}
+                  max={100}
+                  value={mapSettings.uiOpacity ?? 78}
+                  onChange={(e) => handleSettingChange('uiOpacity', parseInt(e.target.value) || 78)}
+                  className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
+                />
+              </div>
+
+              {/* Ayarları Sakla / Sıfırla */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center gap-2">
+                  {onSaveSettings && (
+                    <button
+                      onClick={onSaveSettings}
+                      className="flex-1 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-medium py-1.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-[0.98] text-xs shadow-sm"
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Ayarları Sakla</span>
+                    </button>
+                  )}
+                  {onResetSettings && (
+                    <button
+                      onClick={onResetSettings}
+                      className="py-1.5 px-2.5 bg-white/[0.05] hover:bg-white/10 text-slate-300 hover:text-white rounded-xl transition text-xs flex items-center gap-1"
+                      title="Varsayılana Sıfırla"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      <span>Sıfırla</span>
+                    </button>
+                  )}
+                </div>
+                {isSettingsSaved && (
+                  <div className="p-1.5 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[10px] text-center font-medium animate-in fade-in duration-200">
+                    ✓ Ayarlarınız başarıyla saklandı!
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
 
         {/* Selected Parcels Merge Banner */}
         {selectedParcelIds.length >= 2 && (
@@ -193,507 +372,330 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         )}
       </div>
 
-      {/* Left Panel Toggle Button when Collapsed */}
+      {/* ================= SOL İFRAZ MENÜSÜ (SAĞ ÇİZİM ARAÇLARI GİBİ BUTONLU DOCK) ================= */}
+      {/* Kapalı Durumda Açma Butonu */}
       {!panelOpen && (
         <button
           onClick={() => setPanelOpen(true)}
-          className="absolute top-4 left-4 z-[1000] h-10 px-4 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-2 transition active:scale-95 hover:bg-slate-900/90 shadow-lg"
-          title="Menüyü Aç"
+          className="absolute top-4 left-4 z-[990] h-11 px-3.5 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-2 transition active:scale-95 hover:bg-slate-900/90 shadow-lg border border-white/10"
+          title="İfraz Menüsünü Aç"
         >
-          <Layers className="w-4 h-4 text-blue-400 stroke-[1.75]" />
-          <span>Katmanlar & İFRAZ</span>
+          <Scissors className="w-4 h-4 text-blue-400 stroke-[2]" />
+          <span className="font-semibold text-xs">İfraz</span>
         </button>
       )}
 
-      {/* Unified Left Floating Panel: Katmanlar, İFRAZ ve CAD */}
+      {/* Açık Durumda Butonlu İfraz Menüsü */}
       {panelOpen && (
-        <div className="absolute top-4 left-4 z-[1000] w-88 max-h-[calc(100vh-2rem)] flex flex-col apple-glass rounded-2xl overflow-hidden shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-left-2">
-          {/* Header & Apple Segmented Control */}
-          <div className="h-12 px-3 border-b border-white/[0.08] flex items-center justify-between shrink-0 gap-1.5">
-            <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] flex items-center gap-0.5 flex-1">
-              {[
-                { id: 'params', label: 'İFRAZ', icon: Scissors },
-                { id: 'layers', label: 'Katman', icon: Layers },
-                { id: 'settings', label: 'Ayarlar', icon: Sliders }
-              ].map((tab) => {
-                const isActive = activeTab === tab.id;
-                const IconComponent = tab.icon;
-                return (
-                  <button
-                    key={tab.id}
-                    onClick={() => setActiveTab(tab.id as any)}
-                    className={`flex-1 text-[11px] font-medium py-1.5 rounded-lg transition tracking-tight flex items-center justify-center gap-1 ${
-                      isActive
-                        ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <IconComponent className={`w-3.5 h-3.5 stroke-[1.75] ${isActive ? 'text-blue-400' : 'text-slate-400'}`} />
-                    <span className={tab.id === 'params' ? 'font-bold uppercase tracking-wider' : ''}>{tab.label}</span>
-                  </button>
-                );
-              })}
+        <div className="absolute top-4 left-4 z-[990] w-52 apple-glass rounded-2xl p-2.5 space-y-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-left-2 duration-200 select-none">
+          {/* Header */}
+          <div className="flex items-center justify-between px-1 pb-1 border-b border-white/[0.08]">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+              <Scissors className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+              <span>İfraz</span>
             </div>
-
             <button
               onClick={() => setPanelOpen(false)}
-              className="w-7 h-7 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition shrink-0"
-              title="Paneli Kapat"
+              className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+              title="Gizle"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <ChevronLeft className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          <div className="p-4 overflow-y-auto space-y-4 flex-1 text-xs">
-            {/* ================= SEKMELER 1: KATMANLAR & DOSYA ================= */}
-            {activeTab === 'layers' && (
-              <div className="space-y-4 animate-in fade-in duration-150">
-                {/* Altlık Harita Seçimi (Apple Segmented Control) */}
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-semibold text-slate-300 tracking-tight block">Altlık Harita</label>
-                  <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] grid grid-cols-2 gap-1">
-                    {[
-                      { id: 'googleHybrid', label: 'Hibrit Uydu' },
-                      { id: 'googleSatellite', label: 'Saf Uydu' }
-                    ].map((item) => {
-                      const isActive = mapSettings.tileProvider === item.id;
-                      return (
-                        <button
-                          key={item.id}
-                          onClick={() => handleSettingChange('tileProvider', item.id as any)}
-                          className={`py-1.5 px-2.5 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
-                            isActive
-                              ? 'bg-white/15 text-white shadow-sm border border-white/10 font-semibold'
-                              : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                          }`}
-                        >
-                          <span>{item.label}</span>
-                          {isActive && <Check className="w-3 h-3 text-blue-400 stroke-[2.5]" />}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
+          {/* Grup 1: Hesaplama & Parametreler */}
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Parametreler
+            </div>
 
-                {/* Görsel Katman Ayarları */}
-                <div className="space-y-2 pt-3 border-t border-white/[0.08]">
-                  <label className="text-[11px] font-semibold text-slate-300 tracking-tight block">Görünürlük</label>
-                  <div className="apple-card p-2 space-y-1">
-                    {[
-                      { key: 'showFill', label: 'Parsel Dolguları' },
-                      { key: 'showNames', label: 'Parsel Numaraları' },
-                      { key: 'showAreas', label: 'Parsel Alanları (m²)' },
-                      { key: 'showEdgeLengths', label: 'Kenar Ölçüleri (m)' }
-                    ].map((opt) => {
-                      const isChecked = (mapSettings as any)[opt.key];
-                      return (
-                        <label key={opt.key} className="flex items-center justify-between text-slate-300 hover:text-white cursor-pointer py-1.5 px-2 rounded-lg hover:bg-white/[0.03] transition">
-                          <span className="text-[11px] font-medium">{opt.label}</span>
-                          <input
-                            type="checkbox"
-                            checked={isChecked}
-                            onChange={(e) => handleSettingChange(opt.key as any, e.target.checked)}
-                            className="w-4 h-4 rounded-md accent-blue-500 cursor-pointer"
-                          />
-                        </label>
-                      );
-                    })}
-                  </div>
+            {/* Parça Sayısı Butonu & Popover */}
+            <div className="relative">
+              <button
+                onClick={() => setShowPiecePopover((prev) => !prev)}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  showPiecePopover
+                    ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="İfraz Parça Sayısını Belirleyin"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Hash className={`w-3.5 h-3.5 stroke-[2] ${showPiecePopover ? 'text-white' : 'text-blue-400'}`} />
+                  <span className="text-[11px]">Parça Sayısı</span>
                 </div>
+                <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                  showPiecePopover ? 'bg-blue-700 text-white' : 'text-blue-300 bg-blue-500/10'
+                }`}>
+                  {config.pieceCount === 0 ? '0' : `${config.pieceCount}`}
+                </span>
+              </button>
 
-                {/* Kadastro Dosyası Yükleme */}
-                <div className="pt-3 border-t border-white/[0.08] space-y-1.5">
-                  <label className="text-[11px] font-semibold text-slate-300 tracking-tight block">Kadastro Dosyası</label>
-                  <label className="w-full flex items-center justify-center gap-2 p-3 bg-white/[0.03] hover:bg-white/[0.06] border border-dashed border-white/15 rounded-xl cursor-pointer text-slate-300 hover:text-white transition group">
-                    <Upload className="w-4 h-4 text-blue-400 stroke-[1.75] group-hover:scale-105 transition-transform" />
-                    <span className="font-medium text-xs">KML veya GeoJSON Seç</span>
-                    <input type="file" accept=".kml,.geojson,.json" onChange={onKMLUpload} className="hidden" />
-                  </label>
-                </div>
-
-                {/* Dışa Aktarma Butonları */}
-                <div className="pt-3 border-t border-white/[0.08] space-y-2">
-                  <label className="text-[11px] font-semibold text-slate-300 tracking-tight block">Dışa Aktar & Rapor</label>
-                  <div className="flex flex-col gap-1.5">
-                    {onOpenPrintModal && (
-                      <button
-                        onClick={onOpenPrintModal}
-                        className="w-full bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white font-medium py-2 px-3 rounded-xl flex items-center justify-between shadow-[0_2px_12px_rgba(59,130,246,0.35)] transition active:scale-[0.98]"
-                      >
-                        <span className="flex items-center gap-2 text-xs">
-                          <Printer className="w-3.5 h-3.5 text-blue-100 stroke-[2]" />
-                          Uygulama Krokisi Çıktısı (A4)
-                        </span>
-                        <span className="text-[10px] bg-white/20 text-white px-2 py-0.5 rounded-full font-medium">PDF</span>
-                      </button>
-                    )}
-                    <button
-                      onClick={onExportKML}
-                      className="w-full bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.1] text-slate-200 text-xs py-2 px-3 rounded-xl flex items-center justify-between border border-white/[0.06] transition active:scale-[0.98]"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Download className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
-                        Google Earth KML
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">.kml</span>
-                    </button>
-                    <button
-                      onClick={onExportGeoJSON}
-                      className="w-full bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.1] text-slate-200 text-xs py-2 px-3 rounded-xl flex items-center justify-between border border-white/[0.06] transition active:scale-[0.98]"
-                    >
-                      <span className="flex items-center gap-2">
-                        <Download className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
-                        CBS GeoJSON
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">.geojson</span>
-                    </button>
-                    <button
-                      onClick={onExportCSV}
-                      className="w-full bg-white/[0.04] hover:bg-white/[0.08] active:bg-white/[0.1] text-slate-200 text-xs py-2 px-3 rounded-xl flex items-center justify-between border border-white/[0.06] transition active:scale-[0.98]"
-                    >
-                      <span className="flex items-center gap-2">
-                        <FileSpreadsheet className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-                        Koordinat Tablosu
-                      </span>
-                      <span className="text-[10px] text-slate-400 font-mono">.csv</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Sistem Durumu */}
-                <div className="pt-3 border-t border-white/[0.08]">
-                  <div className="apple-card p-2.5 text-[11px] text-slate-400 leading-relaxed space-y-1">
-                    <div className="flex items-center gap-1.5 text-slate-300 font-medium">
-                      <Info className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-                      <span>Bilgi</span>
-                    </div>
-                    <p className="text-[10px] text-slate-400">{statusMessage}</p>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* ================= SEKMELER 2: İFRAZ AYARLARI ================= */}
-            {activeTab === 'params' && (
-              <div className="space-y-4 animate-in fade-in duration-150">
-                {/* Parça Sayısı & Kesim Açısı */}
-                <div className="apple-card p-3.5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <label className="text-[11px] font-semibold text-slate-300 tracking-tight">Parça Sayısı</label>
-                    <span className="text-xs font-semibold text-blue-400 font-mono bg-blue-500/10 px-2 py-0.5 rounded-full border border-blue-500/20">
-                      {config.pieceCount === 0 ? '0 Parsel (İfrazsız)' : `${config.pieceCount} Parsel`}
+              {/* Parça Sayısı Popover */}
+              {showPiecePopover && (
+                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
+                    <span className="text-xs font-semibold text-slate-200">Parça Sayısı (İfraz Adedi)</span>
+                    <span className="text-xs font-mono font-bold text-blue-400">
+                      {config.pieceCount === 0 ? '0 (İfrazsız)' : `${config.pieceCount} Parsel`}
                     </span>
                   </div>
-                  <div className="flex items-center gap-3">
-                    <input
-                      type="range"
-                      min={0}
-                      max={60}
-                      value={config.pieceCount}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, val));
-                      }}
-                      className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
-                    />
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={config.pieceCount}
-                      onChange={(e) => {
-                        const val = parseInt(e.target.value);
-                        handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, val));
-                      }}
-                      className="w-14 bg-white/[0.04] border border-white/[0.08] text-xs text-center text-white rounded-lg p-1 font-mono outline-none focus:border-blue-500"
-                    />
-                  </div>
-
-                  <div className="pt-2 border-t border-white/[0.08] space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[11px] font-semibold text-slate-300 tracking-tight">Kesim Açısı</label>
-                      <span className="text-xs font-mono font-medium text-amber-400">{config.rotateAngle}°</span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={180}
-                      value={config.rotateAngle}
-                      onChange={(e) => handleConfigChange('rotateAngle', parseFloat(e.target.value) || 0)}
-                      className="w-full h-1 bg-white/10 rounded-full accent-amber-500 cursor-pointer"
-                    />
+                  <input
+                    type="range"
+                    min={0}
+                    max={60}
+                    value={config.pieceCount}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, val));
+                    }}
+                    className="w-full h-1.5 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
+                  />
+                  <div className="grid grid-cols-5 gap-1 pt-0.5">
+                    {[0, 2, 4, 6, 8, 10, 12, 16, 20, 30].map((num) => (
+                      <button
+                        key={num}
+                        onClick={() => handleConfigChange('pieceCount', num)}
+                        className={`text-[10px] py-1 rounded-lg font-mono transition border ${
+                          config.pieceCount === num
+                            ? 'bg-blue-500 text-white font-bold border-blue-400'
+                            : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
+                        }`}
+                      >
+                        {num}
+                      </button>
+                    ))}
                   </div>
                 </div>
+              )}
+            </div>
 
-                {/* Double Row (Çift Sıra / Sırt Sırta) Controls */}
-                <div className="apple-card p-3.5 space-y-3">
+            {/* Kesim Açısı Butonu & Popover */}
+            <div className="relative">
+              <button
+                onClick={() => setShowAnglePopover((prev) => !prev)}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  showAnglePopover
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="İfraz Kesim Açısını Belirleyin (0° - 180°)"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Compass className={`w-3.5 h-3.5 stroke-[2] ${showAnglePopover ? 'text-slate-950' : 'text-amber-400'}`} />
+                  <span className="text-[11px]">Kesim Açısı</span>
+                </div>
+                <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
+                  showAnglePopover ? 'bg-slate-950/20 text-slate-950' : 'text-amber-300 bg-amber-500/10'
+                }`}>
+                  {config.rotateAngle}°
+                </span>
+              </button>
+
+              {/* Kesim Açısı Popover */}
+              {showAnglePopover && (
+                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
+                    <span className="text-xs font-semibold text-slate-200">İfraz Kesim Açısı</span>
+                    <span className="text-xs font-mono font-bold text-amber-400">{config.rotateAngle}°</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={180}
+                    value={config.rotateAngle}
+                    onChange={(e) => handleConfigChange('rotateAngle', parseFloat(e.target.value) || 0)}
+                    className="w-full h-1.5 bg-white/10 rounded-full accent-amber-500 cursor-pointer"
+                  />
+                  <div className="grid grid-cols-5 gap-1 pt-0.5">
+                    {[0, 45, 90, 135, 180].map((deg) => (
+                      <button
+                        key={deg}
+                        onClick={() => handleConfigChange('rotateAngle', deg)}
+                        className={`text-[10px] py-1 rounded-lg font-mono transition border ${
+                          config.rotateAngle === deg
+                            ? 'bg-amber-500 text-slate-950 font-bold border-amber-400'
+                            : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
+                        }`}
+                      >
+                        {deg}°
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Çift Sıra İfraz Butonu & Popover */}
+            <div className="relative">
+              <button
+                onClick={() => setShowDoubleRowPopover((prev) => !prev)}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  config.isDoubleRow
+                    ? 'bg-purple-600 text-white font-bold shadow-md shadow-purple-600/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Çift Sıra (Sırt Sırta) İfraz Modu"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Columns className={`w-3.5 h-3.5 stroke-[2] ${config.isDoubleRow ? 'text-white' : 'text-purple-400'}`} />
+                  <span className="text-[11px]">Çift Sıra</span>
+                </div>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  config.isDoubleRow ? 'bg-purple-900 text-purple-200' : 'text-slate-500 bg-white/[0.03]'
+                }`}>
+                  {config.isDoubleRow ? 'AÇIK' : 'KAPALI'}
+                </span>
+              </button>
+
+              {/* Çift Sıra Popover */}
+              {showDoubleRowPopover && (
+                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
                   <label className="flex items-center justify-between text-xs font-medium text-slate-200 cursor-pointer">
-                    <span>Çift Sıra İfraz (Sırt Sırta)</span>
+                    <span>Çift Sıra Modu</span>
                     <input
                       type="checkbox"
                       checked={config.isDoubleRow}
                       onChange={(e) => handleConfigChange('isDoubleRow', e.target.checked)}
-                      className="w-4 h-4 rounded-md accent-blue-500 cursor-pointer"
+                      className="w-4 h-4 rounded-md accent-purple-500 cursor-pointer"
                     />
                   </label>
-
                   {config.isDoubleRow && (
-                    <div className="space-y-3 pt-2 border-t border-white/[0.08] text-xs">
-                      <div className="space-y-1">
-                        <div className="flex justify-between">
-                          <span className="text-[11px] text-slate-400">Eksen Split Konumu:</span>
-                          <span className="font-medium text-slate-200">%{config.axisPosition}</span>
-                        </div>
-                        <input
-                          type="range"
-                          min={10}
-                          max={90}
-                          value={config.axisPosition}
-                          onChange={(e) => handleConfigChange('axisPosition', parseInt(e.target.value) || 50)}
-                          className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
-                        />
+                    <div className="space-y-2 pt-2 border-t border-white/[0.08] text-xs">
+                      <div className="flex items-center justify-between text-[11px]">
+                        <span className="text-slate-400">Eksen Split Konumu:</span>
+                        <span className="font-mono text-purple-300 font-bold">%{config.axisPosition}</span>
                       </div>
-
-                      <label className="flex items-center justify-between text-slate-300 hover:text-white cursor-pointer pt-1">
-                        <span className="text-[11px]">Sıra Eğilimlerini Ayrı Kullan</span>
-                        <input
-                          type="checkbox"
-                          checked={config.isSplitAngles}
-                          onChange={(e) => handleConfigChange('isSplitAngles', e.target.checked)}
-                          className="w-4 h-4 rounded-md accent-blue-500 cursor-pointer"
-                        />
-                      </label>
+                      <input
+                        type="range"
+                        min={10}
+                        max={90}
+                        value={config.axisPosition}
+                        onChange={(e) => handleConfigChange('axisPosition', parseInt(e.target.value) || 50)}
+                        className="w-full h-1.5 bg-white/10 rounded-full accent-purple-500 cursor-pointer"
+                      />
                     </div>
                   )}
                 </div>
+              )}
+            </div>
+          </div>
 
-                {/* ================= YOL CEPHESİ SEÇ (ÇOKLU KIRIK) ================= */}
-                <div className="apple-card p-3.5 space-y-3 border border-amber-500/20 bg-amber-500/[0.02]">
-                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
-                    <div className="flex items-center gap-1.5 text-xs font-semibold text-white tracking-tight">
-                      <Navigation className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
-                      <span>Yol Cephesi (Çoklu Kırık)</span>
-                    </div>
-                    {selectedFrontageEdgeIndices.length > 0 && onClearFrontage && (
-                      <button
-                        onClick={onClearFrontage}
-                        className="text-[10px] text-slate-400 hover:text-rose-400 flex items-center gap-0.5 transition"
-                        title="Seçili tüm cephe kırıklarını sıfırla"
-                      >
-                        <X className="w-3 h-3" />
-                        <span>Sıfırla</span>
-                      </button>
-                    )}
-                  </div>
+          <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
 
-                  {/* Tek Ana Seçim Butonu: Haritadan Yol Cephesi Seç */}
-                  <button
-                    onClick={onToggleSelectFrontageEdge}
-                    className={`w-full py-2.5 px-3 rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition active:scale-[0.98] border ${
-                      isSelectingFrontageEdge
-                        ? 'bg-amber-500 text-slate-950 font-bold border-amber-400 shadow-[0_2px_14px_rgba(245,158,11,0.5)]'
-                        : 'bg-white/[0.06] hover:bg-white/[0.1] text-white border-white/[0.08]'
-                    }`}
-                    title="Harita üzerinden veya aşağıdaki listeden çoklu kenar seçin"
-                  >
-                    <MousePointerClick className="w-4 h-4 stroke-[2]" />
-                    <span>
-                      {isSelectingFrontageEdge
-                        ? 'Haritada Kenarlara Tıklayın (Seçim Aktif)'
-                        : 'Haritadan Yol Cephesi Seç'}
-                    </span>
-                  </button>
+          {/* Grup 2: Yol Cephesi */}
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Yol Cephesi
+            </div>
 
-                  {/* Çoklu Kırık Cephe Durum Kartı */}
-                  {selectedFrontageEdgeIndices.length > 0 ? (
-                    <div className="p-2.5 bg-amber-500/10 border border-amber-500/25 rounded-xl text-xs space-y-1.5">
-                      <div className="flex items-center justify-between text-amber-300 font-medium">
-                        <span className="flex items-center gap-1">
-                          <Check className="w-3.5 h-3.5 text-amber-400 stroke-[2.5]" />
-                          Toplam Yol Cephesi:
-                        </span>
-                        <span className="font-mono text-white font-bold text-sm">
-                          {multiFrontage.totalLengthM} m
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] text-slate-300">
-                        <span>Seçili Kırık Kenar:</span>
-                        <span className="font-mono text-amber-300 font-semibold">
-                          {selectedFrontageEdgeIndices.length} Adet (
-                          {selectedFrontageEdgeIndices.map((idx) => `#${idx + 1}`).join(', ')})
-                        </span>
-                      </div>
-                      <p className="text-[10px] text-slate-300 leading-tight">
-                        İfraz kesim açısı çoklu kırık doğrultusuna dik olarak{' '}
-                        <span className="text-amber-300 font-mono font-bold">
-                          {multiFrontage.perpAngle}°
-                        </span>{' '}
-                        ayarlandı.
-                      </p>
-                    </div>
-                  ) : (
-                    <p className="text-[10px] text-slate-400 leading-relaxed">
-                      Butona basarak harita üzerinden veya aşağıdaki listeden parselin yol gören kırık kenarlarını (tek veya çoklu) seçebilirsiniz.
-                    </p>
-                  )}
-
-                  {/* Parsel Kenarlarından Çoklu Kırık Seçim Listesi (Chips) */}
-                  {mainPolygonEdges.length > 0 && (
-                    <div className="space-y-1.5 pt-2 border-t border-white/[0.06]">
-                      <div className="flex items-center justify-between text-[10px] font-medium text-slate-400">
-                        <span>Kırık Kenar Listesi:</span>
-                        <span>{selectedFrontageEdgeIndices.length}/{mainPolygonEdges.length} Seçili</span>
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5 max-h-32 overflow-y-auto pr-0.5">
-                        {mainPolygonEdges.map((edge) => {
-                          const isCurrent = selectedFrontageEdgeIndices.includes(edge.index);
-                          return (
-                            <button
-                              key={edge.index}
-                              onClick={() => onToggleFrontageEdge && onToggleFrontageEdge(edge.index)}
-                              className={`py-1.5 px-2 rounded-lg text-[10px] text-left transition flex items-center justify-between border ${
-                                isCurrent
-                                  ? 'bg-amber-500/25 border-amber-500/50 text-amber-200 font-bold shadow-sm'
-                                  : 'bg-white/[0.03] hover:bg-white/[0.08] border-white/[0.06] text-slate-300'
-                              }`}
-                              title={`Kenar #${edge.index + 1} (${edge.lengthM}m) - ${isCurrent ? 'Çıkar' : 'Ekle'}`}
-                            >
-                              <span className="flex items-center gap-1">
-                                <span className={`w-1.5 h-1.5 rounded-full ${isCurrent ? 'bg-amber-400' : 'bg-slate-500'}`} />
-                                Kenar #{edge.index + 1}
-                              </span>
-                              <span className="font-mono text-slate-300 font-medium">{edge.lengthM}m</span>
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* BÜYÜK İFRAZ HESAPLA / UYGULA BUTONU */}
-                {onRecalculate && (
-                  <button
-                    onClick={onRecalculate}
-                    className="w-full h-10 bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white text-xs font-bold tracking-wider uppercase rounded-xl flex items-center justify-center gap-2 shadow-[0_4px_16px_rgba(59,130,246,0.35)] transition active:scale-[0.98] border border-blue-400/30"
-                  >
-                    <RefreshCw className="w-4 h-4 stroke-[2.5]" />
-                    <span className="text-xs uppercase font-extrabold tracking-wider">İFRAZ HESAPLA & UYGULA</span>
-                  </button>
-                )}
+            {/* Yol Cephesi Seç Butonu */}
+            <button
+              onClick={onToggleSelectFrontageEdge}
+              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                isSelectingFrontageEdge
+                  ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30 border border-amber-400'
+                  : selectedFrontageEdgeIndices.length > 0
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/30 font-semibold'
+                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+              }`}
+              title="Haritadan parselin yol gören kenarlarını tıklayarak belirleyin"
+            >
+              <div className="flex items-center gap-1.5">
+                <Navigation className={`w-3.5 h-3.5 stroke-[2] ${isSelectingFrontageEdge ? 'text-slate-950' : 'text-amber-400'}`} />
+                <span className="text-[11px]">Yol Cephesi</span>
               </div>
-            )}
+              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                isSelectingFrontageEdge
+                  ? 'bg-amber-700 text-white'
+                  : selectedFrontageEdgeIndices.length > 0
+                  ? 'bg-amber-500/30 text-amber-200'
+                  : 'text-slate-500 bg-white/[0.03]'
+              }`}>
+                {isSelectingFrontageEdge ? 'SEÇİLİYOR' : selectedFrontageEdgeIndices.length > 0 ? `${selectedFrontageEdgeIndices.length} Kırık` : 'SEÇ'}
+              </span>
+            </button>
 
-            {/* ================= SEKMELER 3: AYARLAR (GECE/GÜNDÜZ, SAYDAMLIK, AYARLARI SAKLA) ================= */}
-            {activeTab === 'settings' && (
-              <div className="space-y-4 animate-in fade-in duration-150">
-                {/* 1. Görünüm & Tema: Gece / Gündüz */}
-                <div className="apple-card p-3.5 space-y-2.5">
-                  <label className="text-[11px] font-semibold text-slate-300 tracking-tight block">
-                    Görünüm & Tema
-                  </label>
-                  <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] grid grid-cols-2 gap-1.5">
+            {/* Cephe Seçilmişse Bilgi Çipi */}
+            {selectedFrontageEdgeIndices.length > 0 && (
+              <div className="p-2 bg-amber-500/10 border border-amber-500/20 rounded-xl text-[11px] space-y-1">
+                <div className="flex items-center justify-between text-amber-300 font-semibold">
+                  <span>Toplam: {multiFrontage.totalLengthM} m</span>
+                  {onClearFrontage && (
                     <button
-                      onClick={() => handleSettingChange('theme', 'dark')}
-                      className={`py-2 px-3 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
-                        mapSettings.theme === 'dark'
-                          ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                      }`}
+                      onClick={onClearFrontage}
+                      className="text-slate-400 hover:text-rose-400 text-[10px] underline"
+                      title="Cephe seçimini temizle"
                     >
-                      <Moon className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-                      <span>Gece Modu</span>
+                      Sıfırla
                     </button>
-                    <button
-                      onClick={() => handleSettingChange('theme', 'light')}
-                      className={`py-2 px-3 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
-                        mapSettings.theme === 'light'
-                          ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
-                          : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                      }`}
-                    >
-                      <Sun className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
-                      <span>Gündüz Modu</span>
-                    </button>
-                  </div>
+                  )}
                 </div>
-
-                {/* 2. Saydamlık Kontrolleri */}
-                <div className="apple-card p-3.5 space-y-3.5">
-                  <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
-                    <label className="text-[11px] font-semibold text-slate-300 tracking-tight flex items-center gap-1.5">
-                      <Sliders className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-                      <span>Saydamlık Ayarları</span>
-                    </label>
-                  </div>
-
-                  {/* Menü & Panel Saydamlığı */}
-                  <div className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-[11px] text-slate-300">Menü & Panel Saydamlığı:</span>
-                      <span className="text-xs font-mono font-semibold text-blue-400">
-                        %{mapSettings.uiOpacity ?? 78}
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={35}
-                      max={100}
-                      value={mapSettings.uiOpacity ?? 78}
-                      onChange={(e) => handleSettingChange('uiOpacity', parseInt(e.target.value) || 78)}
-                      className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
-                    />
-                    <div className="flex justify-between text-[9px] text-slate-400">
-                      <span>Çok Saydam (Cam)</span>
-                      <span>Standart (%78)</span>
-                      <span>Mat / Opak</span>
-                    </div>
-                  </div>
-
-                  {/* Parsel Dolgu Saydamlığı (CAD Araçlarına Taşındı) */}
-                  <div className="pt-2 border-t border-white/[0.08] flex items-center justify-between text-[11px] text-slate-300">
-                    <span>Parsel Dolgu Saydamlığı:</span>
-                    <span className="text-[10px] text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full font-medium border border-emerald-500/20">
-                      Sağ CAD Menüsünde
-                    </span>
-                  </div>
-                </div>
-
-                {/* 3. Ayarlarımı Sakla */}
-                <div className="apple-card p-3.5 space-y-2.5">
-                  <div className="space-y-1">
-                    <span className="text-xs font-semibold text-white block">Kullanıcı Tercihleri</span>
-                    <p className="text-[10px] text-slate-400 leading-relaxed">
-                      Tema, saydamlık ve sistem tercihlerinizi tarayıcınıza kaydedin. Sayfayı yeniden açtığınızda tercihleriniz otomatik olarak korunur.
-                    </p>
-                  </div>
-
-                  <div className="flex flex-col gap-2 pt-1">
-                    <button
-                      onClick={onSaveSettings}
-                      className="w-full bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-medium py-2 px-3 rounded-xl flex items-center justify-center gap-2 shadow-[0_2px_12px_rgba(16,185,129,0.35)] transition active:scale-[0.98]"
-                    >
-                      <Save className="w-4 h-4 stroke-[2]" />
-                      <span className="text-xs font-semibold">Ayarlarımı Sakla</span>
-                    </button>
-
-                    {isSettingsSaved && (
-                      <div className="p-2 rounded-lg bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-[11px] text-center font-medium animate-in fade-in duration-200">
-                        ✓ Ayarlarınız başarıyla saklandı!
-                      </div>
-                    )}
-
-                    <button
-                      onClick={onResetSettings}
-                      className="w-full bg-white/[0.04] hover:bg-white/[0.08] text-slate-300 text-xs py-1.5 px-3 rounded-xl flex items-center justify-center gap-1.5 border border-white/[0.06] transition"
-                    >
-                      <RotateCcw className="w-3.5 h-3.5 stroke-[1.75]" />
-                      <span>Varsayılan Ayarlara Dön</span>
-                    </button>
-                  </div>
+                <div className="text-[10px] text-slate-400">
+                  Dik Açı: <span className="text-amber-300 font-mono font-bold">{multiFrontage.perpAngle}°</span>
                 </div>
               </div>
             )}
+          </div>
+
+          <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
+
+          {/* Grup 3: Eylemler */}
+          <div className="space-y-1">
+            <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              Eylemler
+            </div>
+
+            {/* İfrazı Hesapla / Çalıştır Butonu */}
+            {onRecalculate && (
+              <button
+                onClick={onRecalculate}
+                className="w-full h-8 px-2 bg-blue-500 hover:bg-blue-400 active:bg-blue-600 text-white rounded-xl text-xs font-bold transition flex items-center justify-between active:scale-95 shadow-[0_2px_12px_rgba(59,130,246,0.4)] border border-blue-400/30"
+                title="İfraz hesaplamasını yeniden çalıştır"
+              >
+                <div className="flex items-center gap-1.5">
+                  <RefreshCw className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span className="text-[11px]">İfrazı Hesapla</span>
+                </div>
+                <span className="text-[9px] bg-blue-700/80 px-1.5 py-0.5 rounded font-mono font-bold">
+                  ÇALIŞTIR
+                </span>
+              </button>
+            )}
+
+            {/* Tevhit (Seçilileri Birleştir) Butonu */}
+            <button
+              onClick={onMergeSelected}
+              disabled={selectedParcelIds.length < 2}
+              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                selectedParcelIds.length >= 2
+                  ? 'bg-emerald-500 hover:bg-emerald-400 text-white font-bold shadow-md shadow-emerald-500/30'
+                  : 'text-slate-500 bg-white/[0.02] cursor-not-allowed opacity-60'
+              }`}
+              title={selectedParcelIds.length >= 2 ? 'Seçili parselleri birleştir (Tevhid)' : 'Birleştirmek için haritadan en az 2 parsel seçin'}
+            >
+              <div className="flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 stroke-[2]" />
+                <span className="text-[11px]">Tevhit Et</span>
+              </div>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                selectedParcelIds.length >= 2 ? 'bg-emerald-700 text-white' : 'text-slate-500'
+              }`}>
+                {selectedParcelIds.length >= 2 ? `${selectedParcelIds.length} Parsel` : '0'}
+              </span>
+            </button>
+
+            {/* Sıfırla Butonu */}
+            <button
+              onClick={onReset}
+              className="w-full h-8 px-2 rounded-xl text-xs font-medium text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 transition flex items-center justify-between active:scale-95"
+              title="Tüm parselleri ve çizimleri sıfırla"
+            >
+              <div className="flex items-center gap-1.5">
+                <RotateCcw className="w-3.5 h-3.5 stroke-[2]" />
+                <span className="text-[11px]">Sıfırla</span>
+              </div>
+            </button>
           </div>
         </div>
       )}

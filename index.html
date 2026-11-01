@@ -2,15 +2,28 @@
 <html lang="tr" class="dark">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
     <title>Tevhid ve İfraz Aracı</title>
     <meta name="description" content="Profesyonel harita tabanlı parsel tevhid (birleştirme) ve ifraz (bölme) optimizasyon ve analiz platformu." />
     <meta property="og:title" content="Tevhid ve İfraz Aracı" />
     <meta property="og:description" content="Profesyonel harita tabanlı parsel tevhid (birleştirme) ve ifraz (bölme) optimizasyon ve analiz platformu." />
+
+    <!-- PWA Primary & Mobile Web App Meta Tags -->
+    <meta name="theme-color" content="#020617" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="İfrazTevhid" />
+    <meta name="application-name" content="İfraz & Tevhid" />
+    <meta name="format-detection" content="telephone=no" />
+
+    <!-- Icons -->
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
   </head>
-  <body class="bg-slate-950 text-slate-100 dark">
+  <body class="bg-slate-950 text-slate-100 dark overflow-hidden select-none">
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
-
