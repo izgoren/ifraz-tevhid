@@ -6,6 +6,7 @@ import { ControlPanel } from './components/ControlPanel';
 import { PrintReportModal } from './components/PrintReportModal';
 import { DraggableBaseMapControl } from './components/DraggableBaseMapControl';
 import { OfflineIndicator } from './components/OfflineIndicator';
+import { CadastralAttributeDrawer } from './components/CadastralAttributeDrawer';
 import { Info } from 'lucide-react';
 import {
   GeneratedParcel,
@@ -13,7 +14,9 @@ import {
   ParcelGeometry,
   StatsSummary,
   SubdivisionConfig,
-  UndoRedoState
+  UndoRedoState,
+  LoadedCadastralFile,
+  LoadedCadastralParcel
 } from './types';
 import {
   mergeParcels,
@@ -111,6 +114,21 @@ export default function App() {
     mevkii: 'Köy İçi',
     nitelik: 'Arsa / Tarla'
   });
+
+  // Multi-KML Files & Loaded Parcels Management
+  const [loadedFiles, setLoadedFiles] = useState<LoadedCadastralFile[]>([]);
+  const [activeParcelId, setActiveParcelId] = useState<string | null>(null);
+  const [isAttributeDrawerOpen, setIsAttributeDrawerOpen] = useState<boolean>(false);
+
+  // All parcels across all loaded KML files
+  const allLoadedParcels = useMemo(() => {
+    return loadedFiles.flatMap((f) => f.parcels);
+  }, [loadedFiles]);
+
+  // Secondary parcels (all loaded parcels that are not currently active in mainPolygon)
+  const secondaryParcels = useMemo(() => {
+    return allLoadedParcels.filter((p) => p.id !== activeParcelId);
+  }, [allLoadedParcels, activeParcelId]);
 
   // Multi-edge Road Frontage Selection States ("Çoklu Kırık")
   const [isSelectingFrontageEdge, setIsSelectingFrontageEdge] = useState<boolean>(false);
@@ -503,38 +521,150 @@ export default function App() {
     });
   }, []);
 
-  // KML File Upload Handler
-  const handleKMLUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Multi-KML File Upload Handler
+  const handleKMLUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const fileList = e.target.files;
+    if (!fileList || fileList.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = (evt) => {
+    pushUndoState('Kadastro Dosyaları Yüklendi');
+
+    const newLoadedFiles: LoadedCadastralFile[] = [];
+    const allParsedRoads: Feature<LineString>[] = [];
+    let firstParcelToActivate: LoadedCadastralParcel | null = null;
+
+    for (let fIdx = 0; fIdx < fileList.length; fIdx++) {
+      const file = fileList[fIdx];
       try {
-        const text = evt.target?.result as string;
-        const { parcel, roadLines: parsedRoads, cadastralInfo: extracted } = parseKMLToGeoJSON(text, file.name);
+        const text = await file.text();
+        const parsed = parseKMLToGeoJSON(text, file.name);
 
-        pushUndoState('KML Dosyası Yüklendi');
-        setMainPolygon(parcel);
-        setSelectedFrontageEdgeIndices([]);
-        setIsSelectingFrontageEdge(false);
-        if (parsedRoads && parsedRoads.length > 0) {
-          setRoadLines(parsedRoads);
+        if (parsed.roadLines && parsed.roadLines.length > 0) {
+          allParsedRoads.push(...parsed.roadLines);
         }
 
-        // Derive real location & cadastral info from parsed metadata and coordinates
-        deriveCadastralLocation(parcel, extracted).then((loc) => {
-          setCadastralInfo(loc);
-          setStatusMessage(
-            `Kadastro Yüklendi (${file.name}): ${loc.il} / ${loc.ilce} • ${loc.mahalle} (Ada: ${loc.adaNo}, Parsel: ${loc.parselNo})`
-          );
+        const fileId = `file-${Date.now()}-${fIdx}`;
+        const fileParcels: LoadedCadastralParcel[] = [];
+
+        // For each placemark/parcel in this file
+        for (let pIdx = 0; pIdx < parsed.allParcels.length; pIdx++) {
+          const item = parsed.allParcels[pIdx];
+          const derived = await deriveCadastralLocation(item.geometry, item.cadastralInfo);
+          const loadedParcel: LoadedCadastralParcel = {
+            id: item.id || `parcel-${fileId}-${pIdx}`,
+            fileId,
+            fileName: file.name,
+            name: item.name || `${derived.adaNo}/${derived.parselNo}`,
+            geometry: item.geometry,
+            cadastralInfo: derived,
+            rawProperties: item.rawProperties || {},
+            areaM2: item.areaM2,
+            isActive: false
+          };
+          fileParcels.push(loadedParcel);
+
+          if (!firstParcelToActivate) {
+            firstParcelToActivate = loadedParcel;
+          }
+        }
+
+        newLoadedFiles.push({
+          id: fileId,
+          fileName: file.name,
+          uploadTime: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+          fileSize: file.size,
+          parcels: fileParcels,
+          roadLines: parsed.roadLines || []
         });
       } catch (err: any) {
-        alert(`Dosya Ayrıştırma Hatası: ${err.message}`);
+        console.error(`Dosya Okuma Hatası (${file.name}):`, err);
       }
-    };
-    reader.readAsText(file);
+    }
+
+    if (newLoadedFiles.length === 0) {
+      alert('Yüklenen dosyalarda geçerli parsel geometrisi bulunamadı.');
+      return;
+    }
+
+    setLoadedFiles((prev) => [...prev, ...newLoadedFiles]);
+
+    if (allParsedRoads.length > 0) {
+      setRoadLines((prev) => [...prev, ...allParsedRoads]);
+    }
+
+    if (firstParcelToActivate) {
+      firstParcelToActivate.isActive = true;
+      setMainPolygon(firstParcelToActivate.geometry);
+      setCadastralInfo(firstParcelToActivate.cadastralInfo);
+      setActiveParcelId(firstParcelToActivate.id);
+      setSelectedFrontageEdgeIndices([]);
+      setIsSelectingFrontageEdge(false);
+    }
+
+    const totalNewParcels = newLoadedFiles.reduce((acc, f) => acc + f.parcels.length, 0);
+    if (newLoadedFiles.length === 1) {
+      const f = newLoadedFiles[0];
+      const p = f.parcels[0];
+      setStatusMessage(
+        `Kadastro Yüklendi (${f.fileName}): ${p.cadastralInfo.il} / ${p.cadastralInfo.ilce} • ${p.cadastralInfo.mahalle} (Ada: ${p.cadastralInfo.adaNo}, Parsel: ${p.cadastralInfo.parselNo}) • ${f.parcels.length} Parsel`
+      );
+    } else {
+      setStatusMessage(
+        `${newLoadedFiles.length} Kadastro Dosyası Yüklendi (${totalNewParcels} Parsel). Görünürlük > Öznitelikler menüsünden inceleyebilirsiniz.`
+      );
+    }
   };
+
+  const handleSelectActiveParcel = useCallback((parcel: LoadedCadastralParcel) => {
+    setMainPolygon(parcel.geometry);
+    setCadastralInfo(parcel.cadastralInfo);
+    setActiveParcelId(parcel.id);
+    setSelectedFrontageEdgeIndices([]);
+    setStatusMessage(
+      `Aktif Çalışma Parseli: ${parcel.cadastralInfo.il} / ${parcel.cadastralInfo.ilce} • Ada: ${parcel.cadastralInfo.adaNo}, Parsel: ${parcel.cadastralInfo.parselNo} (${parcel.areaM2.toFixed(1)} m²)`
+    );
+  }, []);
+
+  const handleRemoveFile = useCallback((fileId: string) => {
+    setLoadedFiles((prev) => prev.filter((f) => f.id !== fileId));
+  }, []);
+
+  const handleRemoveParcel = useCallback((parcelId: string) => {
+    setLoadedFiles((prev) =>
+      prev
+        .map((f) => ({
+          ...f,
+          parcels: f.parcels.filter((p) => p.id !== parcelId)
+        }))
+        .filter((f) => f.parcels.length > 0)
+    );
+  }, []);
+
+  const handleMergeLoadedParcels = useCallback((parcelsToMerge: LoadedCadastralParcel[]) => {
+    if (parcelsToMerge.length < 2) return;
+    pushUndoState('Seçilen Kadastro Parselleri Tevhit Edildi');
+
+    try {
+      let unionPoly: any = parcelsToMerge[0].geometry;
+      for (let i = 1; i < parcelsToMerge.length; i++) {
+        unionPoly = turf.union(turf.featureCollection([unionPoly, parcelsToMerge[i].geometry]));
+      }
+
+      if (unionPoly) {
+        setMainPolygon(unionPoly as ParcelGeometry);
+        const mergedCadastral: CadastralInfo = {
+          ...parcelsToMerge[0].cadastralInfo,
+          parselNo: parcelsToMerge.map((p) => p.cadastralInfo.parselNo).join('+'),
+          mevkii: 'Tevhit Parseli'
+        };
+        setCadastralInfo(mergedCadastral);
+        setStatusMessage(
+          `${parcelsToMerge.length} Parsel Tevhit Edildi (Birleştirildi): Ada ${mergedCadastral.adaNo}, Parsel ${mergedCadastral.parselNo}`
+        );
+      }
+    } catch (e: any) {
+      alert(`Tevhit Hatası: ${e.message}`);
+    }
+  }, [pushUndoState]);
 
   // Reset Configuration
   const handleReset = () => {
@@ -645,6 +775,11 @@ export default function App() {
         onToggleFrontageEdge={handleToggleFrontageEdge}
         onDoneSelectingFrontage={() => setIsSelectingFrontageEdge(false)}
         onToggleDragMerge={handleToggleDragMerge}
+        onOpenAttributeDrawer={() => setIsAttributeDrawerOpen(true)}
+        loadedParcelsCount={allLoadedParcels.length}
+        isAttributeDrawerOpen={isAttributeDrawerOpen}
+        secondaryParcels={secondaryParcels}
+        onSelectActiveParcel={handleSelectActiveParcel}
       />
 
       {/* Floating Control Panel */}
@@ -692,6 +827,23 @@ export default function App() {
         config={config}
         cadastralInfo={cadastralInfo}
         onUpdateCadastralInfo={setCadastralInfo}
+      />
+
+      {/* Cadastral Attributes Table Drawer */}
+      <CadastralAttributeDrawer
+        isOpen={isAttributeDrawerOpen}
+        onClose={() => setIsAttributeDrawerOpen(false)}
+        loadedFiles={loadedFiles}
+        activeParcelId={activeParcelId ?? undefined}
+        onSelectActiveParcel={handleSelectActiveParcel}
+        onZoomToParcel={(p) => {
+          setIsAttributeDrawerOpen(false);
+          handleSelectActiveParcel(p);
+        }}
+        onRemoveFile={handleRemoveFile}
+        onRemoveParcel={handleRemoveParcel}
+        onMergeParcels={handleMergeLoadedParcels}
+        onUploadAdditionalKML={handleKMLUpload}
       />
 
       {/* Draggable Base Map (Altlık Harita) Button in Bottom-Right Corner */}

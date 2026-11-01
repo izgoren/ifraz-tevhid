@@ -20,11 +20,16 @@ import {
   RotateCcw,
   SaveAll,
   Hash,
-  Columns
+  Columns,
+  Smartphone,
+  CheckCircle2,
+  Sparkles
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
 import { ParcelEdge, calculateMultiEdgeFrontage } from '../utils/geometryOptimizer';
+import { useServiceWorkerUpdate } from '../hooks/useServiceWorkerUpdate';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface ControlPanelProps {
   config: SubdivisionConfig;
@@ -93,6 +98,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [showPiecePopover, setShowPiecePopover] = useState(false);
   const [showAnglePopover, setShowAnglePopover] = useState(false);
   const [showDoubleRowPopover, setShowDoubleRowPopover] = useState(false);
+
+  // PWA and Service Worker Update Hooks
+  const { hasUpdate, isChecking, lastCheckedText, checkForUpdate, applyUpdate } = useServiceWorkerUpdate();
+  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
   const handleConfigChange = <K extends keyof SubdivisionConfig>(key: K, value: SubdivisionConfig[K]) => {
     onChangeConfig({ ...config, [key]: value });
@@ -229,9 +238,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
         <div className="h-3.5 w-px bg-white/15 mx-0.5" />
 
-        <div className="flex items-center gap-2 px-1 text-xs font-medium tracking-tight text-slate-200">
+        <div className="flex items-center gap-2 px-1 text-xs font-semibold tracking-tight text-slate-100">
           <div className="w-1.5 h-1.5 rounded-full bg-blue-500 shadow-[0_0_8px_rgba(59,130,246,0.8)]" />
-          <span>İfraz</span>
+          <span>İzgören Harita</span>
         </div>
 
         <div className="h-3.5 w-px bg-white/15 mx-0.5" />
@@ -241,26 +250,31 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           <button
             onClick={onOpenPrintModal}
             className="h-8 px-3.5 bg-white/10 hover:bg-white/15 active:bg-white/20 text-white text-xs font-medium rounded-full flex items-center gap-1.5 transition active:scale-95 border border-white/10 shadow-sm"
-            title="Hızlı Yazdır (A4 Uygulama Krokisi Çıktısı Al)"
+            title="Hızlı Yazdır (A4 Kadastro Uygulama Krokisi Çıktısı Al)"
           >
             <Printer className="w-3.5 h-3.5 text-slate-300 stroke-[1.75]" />
             <span>Hızlı Yazdır</span>
           </button>
         )}
 
-        {/* Ayarlar Menüsü Butonu */}
+        {/* Ayarlar Menüsü Butonu (Güncelleme gelince yeşil olur) */}
         <div className="relative">
           <button
             onClick={() => setShowSettingsMenu((prev) => !prev)}
             className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
-              showSettingsMenu
+              hasUpdate
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-bold border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)] animate-pulse'
+                : showSettingsMenu
                 ? 'bg-blue-500 text-white font-bold border-blue-400 shadow-sm'
                 : 'bg-white/10 hover:bg-white/15 text-slate-200 hover:text-white border-white/10'
             }`}
-            title="Sistem ve Görünüm Ayarları"
+            title={hasUpdate ? 'Yeni güncelleme mevcut! Tıklayarak yükleyin.' : 'Sistem ve Görünüm Ayarları'}
           >
-            <Sliders className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+            <Sliders className={`w-3.5 h-3.5 stroke-[2] ${hasUpdate ? 'text-white' : 'text-blue-400'}`} />
             <span>Ayarlar</span>
+            {hasUpdate && (
+              <span className="w-2 h-2 rounded-full bg-white shadow-sm shrink-0 animate-ping" />
+            )}
           </button>
 
           {/* Ayarlar Popover Menüsü */}
@@ -322,6 +336,72 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   onChange={(e) => handleSettingChange('uiOpacity', parseInt(e.target.value) || 78)}
                   className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
                 />
+              </div>
+
+              {/* Uygulama Güncellemesi (Güncelleme Gelince Yeşil Olur) */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                    Uygulama Güncellemesi
+                  </label>
+                  <span className="text-[10px] text-slate-400 font-mono">{lastCheckedText}</span>
+                </div>
+
+                {hasUpdate ? (
+                  <div className="p-2.5 rounded-xl bg-emerald-500/20 border border-emerald-400/50 space-y-2 text-xs animate-in fade-in">
+                    <div className="flex items-center gap-2 text-emerald-300 font-bold">
+                      <Sparkles className="w-4 h-4 text-emerald-400 animate-pulse" />
+                      <span>Yeni Güncelleme Mevcut!</span>
+                    </div>
+                    <p className="text-[11px] text-slate-300">
+                      Yeni kadastro ve harita özellikleri hazır. Hemen güncelleyin.
+                    </p>
+                    <button
+                      onClick={applyUpdate}
+                      className="w-full bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-black py-2 px-3 rounded-xl flex items-center justify-center gap-2 transition active:scale-95 shadow-md shadow-emerald-500/30 text-xs"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5 stroke-[2.5]" />
+                      <span>Uygulamayı Güncelle (Yenile)</span>
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={checkForUpdate}
+                    disabled={isChecking}
+                    className="w-full py-1.5 px-3 bg-white/[0.06] hover:bg-white/12 active:bg-white/20 text-slate-200 hover:text-white rounded-xl transition text-xs flex items-center justify-center gap-2 border border-white/10 active:scale-95 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 text-blue-400 stroke-[2] ${isChecking ? 'animate-spin' : ''}`} />
+                    <span>{isChecking ? 'Denetleniyor...' : 'Güncellemeleri Denetle'}</span>
+                  </button>
+                )}
+              </div>
+
+              {/* PWA Yükle Menüsü */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">
+                  Uygulama Modu (PWA)
+                </label>
+                {isInstalled ? (
+                  <div className="p-2 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-300 text-[11px] flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>PWA Uygulaması Yüklü</span>
+                  </div>
+                ) : (
+                  <div className="space-y-1.5">
+                    <button
+                      onClick={install}
+                      className="w-full py-2 px-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 active:from-blue-700 active:to-indigo-700 text-white font-bold rounded-xl transition text-xs flex items-center justify-center gap-2 shadow-md shadow-blue-600/30 border border-blue-400/40 active:scale-95"
+                    >
+                      <Smartphone className="w-3.5 h-3.5 stroke-[2]" />
+                      <span>PWA Yükle (Masaüstü / Mobil)</span>
+                    </button>
+                    {isIOS && (
+                      <p className="text-[10px] text-slate-400 text-center">
+                        iOS Safari: Paylaş butonu &gt; Ana Ekrana Ekle
+                      </p>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Ayarları Sakla / Sıfırla */}

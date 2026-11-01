@@ -98,6 +98,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const [showVertexTable, setShowVertexTable] = useState(false);
   const [activeDrawTool, setActiveDrawTool] = useState<'polygon' | 'line' | 'delete' | null>(null);
   const [showOpacityPopover, setShowOpacityPopover] = useState(false);
+  const [isRightMenuOpen, setIsRightMenuOpen] = useState(true);
 
   // Active parcel for CAD Vertex Table
   const cadActiveParcel = useMemo(() => {
@@ -134,6 +135,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       map.getPane('labelPane')!.style.zIndex = '660';
 
       mainLayerGroupRef.current = L.layerGroup().addTo(map);
+      secondaryParcelsGroupRef.current = L.layerGroup().addTo(map);
       piecesLayerGroupRef.current = L.layerGroup().addTo(map);
       edgeLabelsGroupRef.current = L.layerGroup().addTo(map);
       axisLineLayerRef.current = L.layerGroup().addTo(map);
@@ -319,6 +321,51 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
     }
   }, [mainPolygon]);
+
+  // Render Secondary (Non-active) Loaded Cadastral Parcels from other KML files
+  useEffect(() => {
+    if (!secondaryParcelsGroupRef.current) return;
+    secondaryParcelsGroupRef.current.clearLayers();
+
+    if (!secondaryParcels || secondaryParcels.length === 0) return;
+
+    secondaryParcels.forEach((sp) => {
+      const geoLayer = L.geoJSON(sp.geometry, {
+        style: {
+          color: '#38bdf8',
+          weight: 2,
+          dashArray: '5, 5',
+          fillColor: '#0284c7',
+          fillOpacity: 0.12
+        }
+      }).addTo(secondaryParcelsGroupRef.current!);
+
+      geoLayer.on('click', () => {
+        if (onSelectActiveParcel) {
+          onSelectActiveParcel(sp);
+        }
+      });
+
+      try {
+        const center = turf.centerOfMass(sp.geometry);
+        const [cLng, cLat] = center.geometry.coordinates;
+        const marker = L.marker([cLat, cLng], {
+          pane: 'labelPane',
+          interactive: true,
+          icon: L.divIcon({
+            className: 'secondary-parcel-badge',
+            html: `<div class="px-2 py-0.5 rounded-full bg-slate-900/90 text-cyan-300 font-mono text-[10px] font-bold border border-cyan-500/40 shadow cursor-pointer hover:bg-cyan-600 hover:text-white transition">${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}</div>`,
+            iconSize: [60, 20],
+            iconAnchor: [30, 10]
+          })
+        });
+        marker.on('click', () => {
+          if (onSelectActiveParcel) onSelectActiveParcel(sp);
+        });
+        secondaryParcelsGroupRef.current!.addLayer(marker);
+      } catch {}
+    });
+  }, [secondaryParcels, onSelectActiveParcel]);
 
   // Render Road Lines
   useEffect(() => {
@@ -740,18 +787,41 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         </div>
       )}
 
+      {/* Kapalı Durumda Sağ Menüyü Açma Butonu */}
+      {!isRightMenuOpen && (
+        <button
+          onClick={() => setIsRightMenuOpen(true)}
+          className="absolute top-4 right-4 z-[1000] h-10 px-3.5 apple-glass rounded-full flex items-center gap-2 text-white shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 hover:border-white/20 active:scale-95 transition"
+          title="CAD & Çizim Araçları Menüsünü Aç"
+        >
+          <PenTool className="w-4 h-4 text-blue-400 stroke-[2]" />
+          <span className="font-semibold text-xs">CAD & Çizim</span>
+          <ChevronRight className="w-3.5 h-3.5 text-slate-400 rotate-180" />
+        </button>
+      )}
+
       {/* Sağ Taraf: CAD Araçları İçerisine Gruplanmış Çizim ve CAD Araç Çubuğu */}
-      <div className="absolute top-4 right-4 z-[1000] flex flex-col p-2 apple-glass rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-right-2 duration-200 w-44">
-        {/* Header */}
-        <div className="flex items-center justify-between px-1.5 py-1 border-b border-white/[0.08] mb-1.5">
-          <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
-            <PenTool className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-            <span>CAD & Çizim</span>
+      {isRightMenuOpen && (
+        <div className="absolute top-4 right-4 z-[1000] flex flex-col p-2 apple-glass rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-right-2 duration-200 w-44">
+          {/* Header */}
+          <div className="flex items-center justify-between px-1.5 py-1 border-b border-white/[0.08] mb-1.5">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+              <PenTool className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+              <span>CAD & Çizim</span>
+            </div>
+            <div className="flex items-center gap-1">
+              {(activeDrawTool || mapSettings.cadModeActive || mapSettings.enableDragMerge) && (
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              )}
+              <button
+                onClick={() => setIsRightMenuOpen(false)}
+                className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+                title="Sağ Menüyü Gizle"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
-          {(activeDrawTool || mapSettings.cadModeActive || mapSettings.enableDragMerge) && (
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-          )}
-        </div>
 
         {/* Grup 1: Çizim Araçları */}
         <div className="space-y-1">
@@ -1074,8 +1144,36 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               </button>
             );
           })}
+
+          {/* Öznitelik Bilgileri Butonu */}
+          {onOpenAttributeDrawer && (
+            <button
+              onClick={onOpenAttributeDrawer}
+              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                isAttributeDrawerOpen
+                  ? 'bg-amber-500 text-slate-950 font-bold border border-amber-400 shadow-md shadow-amber-500/20'
+                  : 'bg-white/[0.08] hover:bg-white/15 text-slate-200 hover:text-white border border-white/10'
+              }`}
+              title="Yüklenen KML/GeoJSON Dosyalarının Öznitelik Bilgileri Tablosunu Aç"
+            >
+              <div className="flex items-center gap-1.5">
+                <TableProperties className={`w-3.5 h-3.5 stroke-[2] ${isAttributeDrawerOpen ? 'text-slate-950' : 'text-amber-400'}`} />
+                <span className="text-[11px]">Öznitelikler</span>
+              </div>
+              <span
+                className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  isAttributeDrawerOpen
+                    ? 'bg-slate-950/20 text-slate-950'
+                    : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
+                }`}
+              >
+                {loadedParcelsCount !== undefined && loadedParcelsCount > 0 ? `${loadedParcelsCount} Parsel` : 'TABLO'}
+              </span>
+            </button>
+          )}
         </div>
       </div>
+      )}
 
       {/* Aktif Çizim / Silme Bilgilendirme Rozeti */}
       {activeDrawTool && (
