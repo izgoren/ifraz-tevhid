@@ -639,32 +639,220 @@ export default function App() {
     );
   }, []);
 
-  const handleMergeLoadedParcels = useCallback((parcelsToMerge: LoadedCadastralParcel[]) => {
-    if (parcelsToMerge.length < 2) return;
-    pushUndoState('Seçilen Kadastro Parselleri Tevhit Edildi');
+  const handleDragMergeLoadedParcels = useCallback(
+    (draggedId: string, targetId: string) => {
+      let parcelA: { geometry: ParcelGeometry; cadastralInfo: CadastralInfo; id: string } | null = null;
+      let parcelB: { geometry: ParcelGeometry; cadastralInfo: CadastralInfo; id: string } | null = null;
 
-    try {
-      let unionPoly: any = parcelsToMerge[0].geometry;
-      for (let i = 1; i < parcelsToMerge.length; i++) {
-        unionPoly = turf.union(turf.featureCollection([unionPoly, parcelsToMerge[i].geometry]));
+      if (draggedId === 'main') {
+        if (mainPolygon) {
+          parcelA = { geometry: mainPolygon, cadastralInfo, id: activeParcelId || 'main' };
+        }
+      } else {
+        const found = allLoadedParcels.find((p) => p.id === draggedId);
+        if (found) parcelA = { geometry: found.geometry, cadastralInfo: found.cadastralInfo as CadastralInfo, id: found.id };
       }
 
-      if (unionPoly) {
-        setMainPolygon(unionPoly as ParcelGeometry);
+      if (targetId === 'main') {
+        if (mainPolygon) {
+          parcelB = { geometry: mainPolygon, cadastralInfo, id: activeParcelId || 'main' };
+        }
+      } else {
+        const found = allLoadedParcels.find((p) => p.id === targetId);
+        if (found) parcelB = { geometry: found.geometry, cadastralInfo: found.cadastralInfo as CadastralInfo, id: found.id };
+      }
+
+      if (!parcelA || !parcelB) return;
+
+      pushUndoState(`Tevhit: ${parcelA.cadastralInfo.adaNo}/${parcelA.cadastralInfo.parselNo} ile ${parcelB.cadastralInfo.adaNo}/${parcelB.cadastralInfo.parselNo}`);
+
+      try {
+        const unionPoly = turf.union(turf.featureCollection([parcelA.geometry, parcelB.geometry]));
+        if (!unionPoly) throw new Error('Geometriler birleştirilemedi.');
+
+        const mergedAda =
+          parcelA.cadastralInfo.adaNo === parcelB.cadastralInfo.adaNo
+            ? parcelA.cadastralInfo.adaNo
+            : `${parcelA.cadastralInfo.adaNo}/${parcelB.cadastralInfo.adaNo}`;
+
+        const mergedParsel =
+          parcelA.cadastralInfo.parselNo === parcelB.cadastralInfo.parselNo
+            ? parcelA.cadastralInfo.parselNo
+            : `${parcelA.cadastralInfo.parselNo}+${parcelB.cadastralInfo.parselNo}`;
+
+        const newArea = turf.area(unionPoly);
+
         const mergedCadastral: CadastralInfo = {
-          ...parcelsToMerge[0].cadastralInfo,
-          parselNo: parcelsToMerge.map((p) => p.cadastralInfo.parselNo).join('+'),
-          mevkii: 'Tevhit Parseli'
+          il: parcelA.cadastralInfo.il || parcelB.cadastralInfo.il,
+          ilce: parcelA.cadastralInfo.ilce || parcelB.cadastralInfo.ilce,
+          mahalle: parcelA.cadastralInfo.mahalle || parcelB.cadastralInfo.mahalle,
+          adaNo: mergedAda,
+          parselNo: mergedParsel,
+          mevkii: parcelA.cadastralInfo.mevkii || parcelB.cadastralInfo.mevkii || 'Tevhit Parseli',
+          nitelik: parcelA.cadastralInfo.nitelik || parcelB.cadastralInfo.nitelik || 'Arsa / Tarla',
+          tapuAlaniM2: newArea,
+          source: 'file'
         };
+
+        const unionGeometry = unionPoly as ParcelGeometry;
+        setMainPolygon(unionGeometry);
         setCadastralInfo(mergedCadastral);
+        const newActiveId = `merged-${Date.now()}`;
+        setActiveParcelId(newActiveId);
+
+        setLoadedFiles((prev) => {
+          const removedIds = new Set([parcelA!.id, parcelB!.id]);
+          let updated = prev
+            .map((f) => ({
+              ...f,
+              parcels: f.parcels.filter((p) => !removedIds.has(p.id))
+            }))
+            .filter((f) => f.parcels.length > 0);
+
+          const newLoadedParcel: LoadedCadastralParcel = {
+            id: newActiveId,
+            fileId: 'merged-files',
+            fileName: 'Tevhit_Parseli.kml',
+            name: `${mergedAda}/${mergedParsel}`,
+            geometry: unionGeometry,
+            cadastralInfo: mergedCadastral,
+            rawProperties: {
+              ADA: mergedAda,
+              PARSEL: mergedParsel,
+              IL: mergedCadastral.il,
+              ILCE: mergedCadastral.ilce,
+              MAHALLE: mergedCadastral.mahalle,
+              ALAN: newArea.toFixed(2),
+              TEVHIT: 'EVET'
+            },
+            areaM2: newArea,
+            isActive: true
+          };
+
+          if (updated.length > 0) {
+            updated[0] = {
+              ...updated[0],
+              parcels: [newLoadedParcel, ...updated[0].parcels]
+            };
+          } else {
+            updated = [
+              {
+                id: 'merged-file-group',
+                fileName: 'Tevhit Edilen Parseller',
+                uploadTime: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+                parcels: [newLoadedParcel],
+                roadLines: []
+              }
+            ];
+          }
+
+          return updated;
+        });
+
+        // Reset subdivided pieces so user can sub-divide the new merged parcel
+        setParcels([]);
+        setSelectedParcelIds([]);
+
         setStatusMessage(
-          `${parcelsToMerge.length} Parsel Tevhit Edildi (Birleştirildi): Ada ${mergedCadastral.adaNo}, Parsel ${mergedCadastral.parselNo}`
+          `Sürükle-Bırak Tevhit Tamamlandı: Ada ${mergedAda}, Parsel ${mergedParsel} (${newArea.toFixed(1)} m²)`
         );
+      } catch (err: any) {
+        console.error('Tevhit hatası:', err);
+        alert(`Tevhit Hatası: ${err.message || 'Geometriler birleştirilemedi'}`);
       }
-    } catch (e: any) {
-      alert(`Tevhit Hatası: ${e.message}`);
-    }
-  }, [pushUndoState]);
+    },
+    [mainPolygon, cadastralInfo, activeParcelId, allLoadedParcels, pushUndoState]
+  );
+
+  const handleMergeLoadedParcels = useCallback(
+    (parcelsToMerge: LoadedCadastralParcel[]) => {
+      if (parcelsToMerge.length < 2) return;
+      pushUndoState('Seçilen Kadastro Parselleri Tevhit Edildi');
+
+      try {
+        let unionPoly: any = parcelsToMerge[0].geometry;
+        for (let i = 1; i < parcelsToMerge.length; i++) {
+          unionPoly = turf.union(turf.featureCollection([unionPoly, parcelsToMerge[i].geometry]));
+        }
+
+        if (unionPoly) {
+          const unionGeometry = unionPoly as ParcelGeometry;
+          const mergedAda = Array.from(new Set(parcelsToMerge.map((p) => p.cadastralInfo.adaNo))).join('/');
+          const mergedParsel = parcelsToMerge.map((p) => p.cadastralInfo.parselNo).join('+');
+          const newArea = turf.area(unionPoly);
+
+          const mergedCadastral: CadastralInfo = {
+            ...parcelsToMerge[0].cadastralInfo,
+            adaNo: mergedAda,
+            parselNo: mergedParsel,
+            tapuAlaniM2: newArea,
+            mevkii: 'Tevhit Parseli'
+          };
+
+          setMainPolygon(unionGeometry);
+          setCadastralInfo(mergedCadastral);
+          const newActiveId = `merged-multi-${Date.now()}`;
+          setActiveParcelId(newActiveId);
+
+          setLoadedFiles((prev) => {
+            const removedIds = new Set(parcelsToMerge.map((p) => p.id));
+            let updated = prev
+              .map((f) => ({
+                ...f,
+                parcels: f.parcels.filter((p) => !removedIds.has(p.id))
+              }))
+              .filter((f) => f.parcels.length > 0);
+
+            const newLoadedParcel: LoadedCadastralParcel = {
+              id: newActiveId,
+              fileId: 'merged-files',
+              fileName: 'Tevhit_Parseli.kml',
+              name: `${mergedAda}/${mergedParsel}`,
+              geometry: unionGeometry,
+              cadastralInfo: mergedCadastral,
+              rawProperties: {
+                ADA: mergedAda,
+                PARSEL: mergedParsel,
+                ALAN: newArea.toFixed(2),
+                TEVHIT: 'EVET'
+              },
+              areaM2: newArea,
+              isActive: true
+            };
+
+            if (updated.length > 0) {
+              updated[0] = {
+                ...updated[0],
+                parcels: [newLoadedParcel, ...updated[0].parcels]
+              };
+            } else {
+              updated = [
+                {
+                  id: 'merged-file-group',
+                  fileName: 'Tevhit Edilen Parseller',
+                  uploadTime: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+                  parcels: [newLoadedParcel],
+                  roadLines: []
+                }
+              ];
+            }
+
+            return updated;
+          });
+
+          setParcels([]);
+          setSelectedParcelIds([]);
+
+          setStatusMessage(
+            `${parcelsToMerge.length} Parsel Tevhit Edildi (Birleştirildi): Ada ${mergedCadastral.adaNo}, Parsel ${mergedCadastral.parselNo} (${newArea.toFixed(1)} m²)`
+          );
+        }
+      } catch (e: any) {
+        alert(`Tevhit Hatası: ${e.message}`);
+      }
+    },
+    [pushUndoState]
+  );
 
   // Reset Configuration
   const handleReset = () => {
@@ -780,6 +968,7 @@ export default function App() {
         isAttributeDrawerOpen={isAttributeDrawerOpen}
         secondaryParcels={secondaryParcels}
         onSelectActiveParcel={handleSelectActiveParcel}
+        onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
       />
 
       {/* Floating Control Panel */}

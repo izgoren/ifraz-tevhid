@@ -1,7 +1,7 @@
 import * as turf from '@turf/turf';
 import type { Feature, LineString, Polygon, MultiPolygon } from 'geojson';
 import { ParcelGeometry } from '../types';
-import { extractCadastralInfo, CadastralInfo } from './cadastralLocation';
+import { extractCadastralInfo, CadastralInfo, assignCadastralField, extractFromTextLabel } from './cadastralLocation';
 
 export interface ParsedPlacemarkParcel {
   id: string;
@@ -31,7 +31,10 @@ function extractPlacemarkAttributes(
 
   const nameEl = pm.querySelector('name');
   const name = nameEl?.textContent?.trim() || '';
-  if (name) raw['NAME'] = name;
+  if (name) {
+    raw['NAME'] = name;
+    extractFromTextLabel(cadastral, name);
+  }
 
   // 1. SimpleData tags in SchemaData/ExtendedData (TKGM Megsis standard)
   const simpleDataList = pm.querySelectorAll('SimpleData');
@@ -40,18 +43,7 @@ function extractPlacemarkAttributes(
     const textVal = sd.textContent?.trim() || '';
     if (attrName && textVal) {
       raw[attrName] = textVal;
-      const upper = attrName.toUpperCase();
-      if ((upper === 'IL' || upper === 'İL')) cadastral.il = textVal;
-      else if ((upper === 'ILCE' || upper === 'İLÇE')) cadastral.ilce = textVal;
-      else if ((upper === 'MAHALLE' || upper === 'MAHALLE_ADI' || upper === 'KOY' || upper === 'KÖY')) cadastral.mahalle = textVal;
-      else if ((upper === 'ADA' || upper === 'ADANO' || upper === 'ADA_NO')) cadastral.adaNo = textVal;
-      else if ((upper === 'PARSEL' || upper === 'PARSELNO' || upper === 'PARSEL_NO')) cadastral.parselNo = textVal;
-      else if ((upper === 'MEVKII' || upper === 'MEVKİ')) cadastral.mevkii = textVal;
-      else if ((upper === 'NITELIK' || upper === 'NİTELİK' || upper === 'VASIF')) cadastral.nitelik = textVal;
-      else if ((upper === 'ALAN' || upper === 'TAPUALAN' || upper === 'TAPU_ALANI')) {
-        const num = parseFloat(textVal.replace(',', '.'));
-        if (!isNaN(num)) cadastral.tapuAlaniM2 = num;
-      }
+      assignCadastralField(cadastral, attrName, textVal);
     }
   });
 
@@ -63,22 +55,42 @@ function extractPlacemarkAttributes(
     const textVal = (valEl?.textContent || d.textContent)?.trim() || '';
     if (attrName && textVal) {
       raw[attrName] = textVal;
-      const upper = attrName.toUpperCase();
-      if ((upper === 'IL' || upper === 'İL') && !cadastral.il) cadastral.il = textVal;
-      else if ((upper === 'ILCE' || upper === 'İLÇE') && !cadastral.ilce) cadastral.ilce = textVal;
-      else if ((upper === 'MAHALLE' || upper === 'MAHALLE_ADI') && !cadastral.mahalle) cadastral.mahalle = textVal;
-      else if ((upper === 'ADA' || upper === 'ADANO' || upper === 'ADA_NO') && !cadastral.adaNo) cadastral.adaNo = textVal;
-      else if ((upper === 'PARSEL' || upper === 'PARSELNO' || upper === 'PARSEL_NO') && !cadastral.parselNo) cadastral.parselNo = textVal;
+      assignCadastralField(cadastral, attrName, textVal);
     }
   });
 
-  // 3. Fallback from placemark name (e.g. "1042/18" or "1042-18")
-  if (name && (!cadastral.adaNo || !cadastral.parselNo)) {
-    const slash = name.match(/(\d+)\s*[/_-]\s*(\d+)/);
-    if (slash) {
-      if (!cadastral.adaNo) cadastral.adaNo = slash[1];
-      if (!cadastral.parselNo) cadastral.parselNo = slash[2];
+  // 3. Description parsing (Netcad HTML tables and key-value formats)
+  const descEl = pm.querySelector('description');
+  const desc = descEl?.textContent?.trim() || '';
+  if (desc) {
+    raw['DESCRIPTION'] = desc;
+    // HTML table cell pattern: <td>KEY</td><td>VALUE</td>
+    const cellRegex = /<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>\s*<(?:td|th)[^>]*>([\s\S]*?)<\/(?:td|th)>/gi;
+    let cMatch: RegExpExecArray | null;
+    while ((cMatch = cellRegex.exec(desc)) !== null) {
+      const cleanKey = cMatch[1].replace(/<[^>]+>/g, '').trim();
+      const cleanVal = cMatch[2].replace(/<[^>]+>/g, '').trim();
+      if (cleanKey && cleanVal) {
+        raw[cleanKey] = cleanVal;
+        assignCadastralField(cadastral, cleanKey, cleanVal);
+      }
     }
+
+    // Key-value text in description: e.g. ADA : 1042 or Ada No = 1042
+    if (!cadastral.adaNo) {
+      const adaInDesc = desc.match(/(?:ADA|ADA\s*NO|ADANO)\s*[:=]\s*([^\s<>,;]+)/i);
+      if (adaInDesc) cadastral.adaNo = adaInDesc[1].trim();
+    }
+    if (!cadastral.parselNo) {
+      const parselInDesc = desc.match(/(?:PARSEL|PARSEL\s*NO|PARSELNO)\s*[:=]\s*([^\s<>,;]+)/i);
+      if (parselInDesc) cadastral.parselNo = parselInDesc[1].trim();
+    }
+    extractFromTextLabel(cadastral, desc);
+  }
+
+  // 4. Placemark name fallback (e.g. "1042/18" or "1042-18")
+  if (name && (!cadastral.adaNo || !cadastral.parselNo)) {
+    extractFromTextLabel(cadastral, name);
   }
 
   return { cadastral, raw, name };
@@ -94,32 +106,17 @@ function extractGeoJSONFeatureAttributes(
   const raw: Record<string, string> = {};
   const cadastral: Partial<CadastralInfo> = { ...fileCadastralFallback };
   const props = feat.properties || {};
-  let name = props.name || props.NAME || '';
+  let name = props.name || props.NAME || props.title || props.id || '';
 
   for (const [k, v] of Object.entries(props)) {
     if (v === null || v === undefined) continue;
     const strVal = String(v).trim();
     raw[k] = strVal;
-    const upper = k.trim().toUpperCase();
-    if ((upper === 'IL' || upper === 'İL')) cadastral.il = strVal;
-    else if ((upper === 'ILCE' || upper === 'İLÇE')) cadastral.ilce = strVal;
-    else if ((upper === 'MAHALLE' || upper === 'MAHALLE_ADI')) cadastral.mahalle = strVal;
-    else if ((upper === 'ADA' || upper === 'ADANO' || upper === 'ADA_NO')) cadastral.adaNo = strVal;
-    else if ((upper === 'PARSEL' || upper === 'PARSELNO' || upper === 'PARSEL_NO')) cadastral.parselNo = strVal;
-    else if ((upper === 'MEVKII' || upper === 'MEVKİ')) cadastral.mevkii = strVal;
-    else if ((upper === 'NITELIK' || upper === 'NİTELİK' || upper === 'VASIF')) cadastral.nitelik = strVal;
-    else if ((upper === 'ALAN' || upper === 'TAPUALAN')) {
-      const num = parseFloat(strVal.replace(',', '.'));
-      if (!isNaN(num)) cadastral.tapuAlaniM2 = num;
-    }
+    assignCadastralField(cadastral, k, strVal);
   }
 
-  if (name && (!cadastral.adaNo || !cadastral.parselNo)) {
-    const slash = name.match(/(\d+)\s*[/_-]\s*(\d+)/);
-    if (slash) {
-      if (!cadastral.adaNo) cadastral.adaNo = slash[1];
-      if (!cadastral.parselNo) cadastral.parselNo = slash[2];
-    }
+  if (name) {
+    extractFromTextLabel(cadastral, name);
   }
 
   return { cadastral, raw, name };

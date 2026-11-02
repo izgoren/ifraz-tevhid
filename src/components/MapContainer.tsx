@@ -56,6 +56,7 @@ interface MapContainerProps {
   isAttributeDrawerOpen?: boolean;
   secondaryParcels?: LoadedCadastralParcel[];
   onSelectActiveParcel?: (parcel: LoadedCadastralParcel) => void;
+  onDragMergeLoadedParcels?: (draggedId: string, targetId: string) => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -83,7 +84,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   loadedParcelsCount,
   isAttributeDrawerOpen,
   secondaryParcels = [],
-  onSelectActiveParcel
+  onSelectActiveParcel,
+  onDragMergeLoadedParcels
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -308,19 +310,58 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     mainLayerGroupRef.current.clearLayers();
 
     if (mainPolygon) {
+      const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
       const geoLayer = L.geoJSON(mainPolygon, {
         style: {
-          color: '#16a34a',
-          weight: 3.5,
-          dashArray: '4, 4',
+          color: isDragMergeActive ? '#10b981' : '#16a34a',
+          weight: isDragMergeActive ? 4 : 3.5,
+          dashArray: isDragMergeActive ? '6, 4' : '4, 4',
           fillColor: '#22c55e',
-          fillOpacity: 0.08
+          fillOpacity: 0.12
         }
       }).addTo(mainLayerGroupRef.current);
 
+      if (isDragMergeActive && secondaryParcels.length > 0) {
+        geoLayer.eachLayer((subLayer: any) => {
+          if (subLayer.pm) {
+            subLayer.pm.enableLayerDrag();
+
+            subLayer.on('pm:dragend', () => {
+              const droppedGeo = subLayer.toGeoJSON();
+              let targetParcelId: string | null = null;
+
+              for (const other of secondaryParcels) {
+                try {
+                  const buffered = turf.buffer(droppedGeo, 0.002, { units: 'kilometers' }) || droppedGeo;
+                  if (turf.booleanIntersects(buffered, other.geometry)) {
+                    targetParcelId = other.id;
+                    break;
+                  }
+                } catch (err) {
+                  console.warn('Tevhit sürükleme kesişim kontrolü hatası:', err);
+                }
+              }
+
+              if (targetParcelId && onDragMergeLoadedParcels) {
+                onDragMergeLoadedParcels('main', targetParcelId);
+              } else {
+                // Reset position to original
+                try {
+                  const tempGroup = L.geoJSON(mainPolygon);
+                  const origSub = tempGroup.getLayers()[0] as L.Polygon;
+                  if (origSub && origSub.getLatLngs) {
+                    subLayer.setLatLngs(origSub.getLatLngs());
+                  }
+                } catch {}
+              }
+            });
+          }
+        });
+      }
+
       map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
     }
-  }, [mainPolygon]);
+  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, secondaryParcels, onDragMergeLoadedParcels]);
 
   // Render Secondary (Non-active) Loaded Cadastral Parcels from other KML files
   useEffect(() => {
@@ -329,22 +370,83 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
     if (!secondaryParcels || secondaryParcels.length === 0) return;
 
+    const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
+
     secondaryParcels.forEach((sp) => {
       const geoLayer = L.geoJSON(sp.geometry, {
         style: {
-          color: '#38bdf8',
-          weight: 2,
-          dashArray: '5, 5',
-          fillColor: '#0284c7',
-          fillOpacity: 0.12
+          color: isDragMergeActive ? '#f59e0b' : '#38bdf8',
+          weight: isDragMergeActive ? 3 : 2,
+          dashArray: isDragMergeActive ? '4, 4' : '5, 5',
+          fillColor: isDragMergeActive ? '#f59e0b' : '#0284c7',
+          fillOpacity: isDragMergeActive ? 0.25 : 0.12
         }
       }).addTo(secondaryParcelsGroupRef.current!);
 
       geoLayer.on('click', () => {
-        if (onSelectActiveParcel) {
+        if (!isDragMergeActive && onSelectActiveParcel) {
           onSelectActiveParcel(sp);
         }
       });
+
+      if (isDragMergeActive) {
+        geoLayer.bindTooltip(`Tevhit için sürükleyin: ${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}`, {
+          direction: 'top',
+          className: 'bg-amber-950 text-amber-300 font-semibold text-[11px] border border-amber-500 rounded px-2 py-0.5 shadow'
+        });
+
+        geoLayer.eachLayer((subLayer: any) => {
+          if (subLayer.pm) {
+            subLayer.pm.enableLayerDrag();
+
+            subLayer.on('pm:dragend', () => {
+              const droppedGeo = subLayer.toGeoJSON();
+              let targetParcelId: string | null = null;
+
+              // Check intersection with mainPolygon
+              if (mainPolygon) {
+                try {
+                  const buffered = turf.buffer(droppedGeo, 0.002, { units: 'kilometers' }) || droppedGeo;
+                  if (turf.booleanIntersects(buffered, mainPolygon)) {
+                    targetParcelId = 'main';
+                  }
+                } catch (err) {
+                  console.warn('Tevhit sürükleme kontrolü:', err);
+                }
+              }
+
+              // Check intersection with other secondary parcels
+              if (!targetParcelId) {
+                for (const other of secondaryParcels) {
+                  if (other.id === sp.id) continue;
+                  try {
+                    const buffered = turf.buffer(droppedGeo, 0.002, { units: 'kilometers' }) || droppedGeo;
+                    if (turf.booleanIntersects(buffered, other.geometry)) {
+                      targetParcelId = other.id;
+                      break;
+                    }
+                  } catch (err) {
+                    console.warn('Tevhit sürükleme kontrolü:', err);
+                  }
+                }
+              }
+
+              if (targetParcelId && onDragMergeLoadedParcels) {
+                onDragMergeLoadedParcels(sp.id, targetParcelId);
+              } else {
+                // Reset position to original
+                try {
+                  const tempGroup = L.geoJSON(sp.geometry);
+                  const origSub = tempGroup.getLayers()[0] as L.Polygon;
+                  if (origSub && origSub.getLatLngs) {
+                    subLayer.setLatLngs(origSub.getLatLngs());
+                  }
+                } catch {}
+              }
+            });
+          }
+        });
+      }
 
       try {
         const center = turf.centerOfMass(sp.geometry);
@@ -354,7 +456,11 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           interactive: true,
           icon: L.divIcon({
             className: 'secondary-parcel-badge',
-            html: `<div class="px-2 py-0.5 rounded-full bg-slate-900/90 text-cyan-300 font-mono text-[10px] font-bold border border-cyan-500/40 shadow cursor-pointer hover:bg-cyan-600 hover:text-white transition">${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}</div>`,
+            html: `<div class="px-2 py-0.5 rounded-full ${
+              isDragMergeActive
+                ? 'bg-amber-900/90 text-amber-200 border-amber-500 animate-pulse'
+                : 'bg-slate-900/90 text-cyan-300 border-cyan-500/40'
+            } font-mono text-[10px] font-bold border shadow cursor-pointer hover:bg-cyan-600 hover:text-white transition">${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}</div>`,
             iconSize: [60, 20],
             iconAnchor: [30, 10]
           })
@@ -365,7 +471,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         secondaryParcelsGroupRef.current!.addLayer(marker);
       } catch {}
     });
-  }, [secondaryParcels, onSelectActiveParcel]);
+  }, [secondaryParcels, onSelectActiveParcel, mapSettings.enableDragMerge, mapSettings.cadModeActive, mainPolygon, onDragMergeLoadedParcels]);
 
   // Render Road Lines
   useEffect(() => {

@@ -392,12 +392,12 @@ export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> =
 
                           {/* Ada No */}
                           <td className="py-2 px-3 text-center font-mono font-bold text-amber-400">
-                            {parcel.cadastralInfo.adaNo}
+                            {parcel.cadastralInfo.adaNo || '—'}
                           </td>
 
                           {/* Parsel No */}
                           <td className="py-2 px-3 text-center font-mono font-bold text-amber-400">
-                            {parcel.cadastralInfo.parselNo}
+                            {parcel.cadastralInfo.parselNo || '—'}
                           </td>
 
                           {/* Mevkii */}
