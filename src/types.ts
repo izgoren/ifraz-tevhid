@@ -99,6 +99,7 @@ export interface MapSettings {
   showNames: boolean;
   showAreas: boolean;
   showEdgeLengths: boolean;
+  showCadastre?: boolean; // Balastro / Kadastro parsel sınırları görünürlüğü
   enableDragMerge: boolean;
   selectModeMerge: boolean;
   cadModeActive: boolean; // CAD ekranı gibi vertex ve köşe düzenleme modu

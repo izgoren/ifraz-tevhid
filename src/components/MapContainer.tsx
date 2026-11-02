@@ -27,7 +27,8 @@ import {
   Hash,
   Ruler,
   Maximize2,
-  TableProperties
+  TableProperties,
+  Landmark
 } from 'lucide-react';
 
 interface MapContainerProps {
@@ -95,6 +96,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const axisLineLayerRef = useRef<L.LayerGroup | null>(null);
   const roadLinesGroupRef = useRef<L.LayerGroup | null>(null);
   const frontageEdgeGroupRef = useRef<L.LayerGroup | null>(null);
+  const vertexMarkersGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
 
   const [showVertexTable, setShowVertexTable] = useState(false);
@@ -136,6 +138,9 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       map.createPane('labelPane');
       map.getPane('labelPane')!.style.zIndex = '660';
 
+      map.createPane('vertexPane');
+      map.getPane('vertexPane')!.style.zIndex = '670';
+
       mainLayerGroupRef.current = L.layerGroup().addTo(map);
       secondaryParcelsGroupRef.current = L.layerGroup().addTo(map);
       piecesLayerGroupRef.current = L.layerGroup().addTo(map);
@@ -143,6 +148,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       axisLineLayerRef.current = L.layerGroup().addTo(map);
       roadLinesGroupRef.current = L.layerGroup().addTo(map);
       frontageEdgeGroupRef.current = L.layerGroup().addTo(map);
+      vertexMarkersGroupRef.current = L.layerGroup().addTo(map);
 
       // Translate Geoman Drawing Controls to Turkish
       try {
@@ -309,7 +315,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
     mainLayerGroupRef.current.clearLayers();
 
-    if (mainPolygon) {
+    if (mainPolygon && (mapSettings.showCadastre ?? true)) {
       const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
       const geoLayer = L.geoJSON(mainPolygon, {
         style: {
@@ -361,14 +367,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
     }
-  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, secondaryParcels, onDragMergeLoadedParcels]);
+  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, mapSettings.showCadastre, secondaryParcels, onDragMergeLoadedParcels]);
 
   // Render Secondary (Non-active) Loaded Cadastral Parcels from other KML files
   useEffect(() => {
     if (!secondaryParcelsGroupRef.current) return;
     secondaryParcelsGroupRef.current.clearLayers();
 
-    if (!secondaryParcels || secondaryParcels.length === 0) return;
+    if (!secondaryParcels || secondaryParcels.length === 0 || mapSettings.showCadastre === false) return;
 
     const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
 
@@ -471,7 +477,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         secondaryParcelsGroupRef.current!.addLayer(marker);
       } catch {}
     });
-  }, [secondaryParcels, onSelectActiveParcel, mapSettings.enableDragMerge, mapSettings.cadModeActive, mainPolygon, onDragMergeLoadedParcels]);
+  }, [secondaryParcels, onSelectActiveParcel, mapSettings.enableDragMerge, mapSettings.cadModeActive, mapSettings.showCadastre, mainPolygon, onDragMergeLoadedParcels]);
 
   // Render Road Lines
   useEffect(() => {
@@ -783,6 +789,216 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     onDragMerge,
     onParcelGeometryUpdated
   ]);
+
+  // Render Balastro & İfraz/Tevhid Corner & Break Daire Noktaları (Circle Markers)
+  useEffect(() => {
+    if (!vertexMarkersGroupRef.current) return;
+    vertexMarkersGroupRef.current.clearLayers();
+
+    const isBalastroActive = mapSettings.showCadastre ?? true;
+    if (!isBalastroActive) return;
+
+    interface RawNode {
+      lng: number;
+      lat: number;
+      isCadastral: boolean;
+      isIfrazCut: boolean;
+      parcelName?: string;
+    }
+
+    interface UniqueVertexNode {
+      lng: number;
+      lat: number;
+      isCadastral: boolean;
+      isIfrazCut: boolean;
+      parcelNames: string[];
+    }
+
+    const rawNodes: RawNode[] = [];
+
+    // 1. Balastro Ana Kadastro Sınır Köşeleri
+    if (mainPolygon) {
+      let mainCoords: [number, number][] = [];
+      if (mainPolygon.geometry.type === 'Polygon') {
+        mainCoords = (mainPolygon.geometry.coordinates[0] || []).slice(0, -1) as [number, number][];
+      } else if (mainPolygon.geometry.type === 'MultiPolygon') {
+        mainCoords = mainPolygon.geometry.coordinates.flatMap((poly) => (poly[0] || []).slice(0, -1)) as [number, number][];
+      }
+
+      mainCoords.forEach(([lng, lat]) => {
+        rawNodes.push({
+          lng,
+          lat,
+          isCadastral: true,
+          isIfrazCut: false,
+          parcelName: 'Ana Kadastro Sınırı'
+        });
+      });
+    }
+
+    // 2. İkincil Kadastro Parselleri Köşeleri
+    if (secondaryParcels && secondaryParcels.length > 0) {
+      secondaryParcels.forEach((sp) => {
+        let spCoords: [number, number][] = [];
+        if (sp.geometry.geometry.type === 'Polygon') {
+          spCoords = (sp.geometry.geometry.coordinates[0] || []).slice(0, -1) as [number, number][];
+        } else if (sp.geometry.geometry.type === 'MultiPolygon') {
+          spCoords = sp.geometry.geometry.coordinates.flatMap((poly) => (poly[0] || []).slice(0, -1)) as [number, number][];
+        }
+        spCoords.forEach(([lng, lat]) => {
+          rawNodes.push({
+            lng,
+            lat,
+            isCadastral: true,
+            isIfrazCut: false,
+            parcelName: `${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}`
+          });
+        });
+      });
+    }
+
+    // 3. İfraz ve Tevhid Sonrası Oluşan Parça Kırıkları
+    if (parcels && parcels.length > 0) {
+      parcels.forEach((p) => {
+        let pCoords: [number, number][] = [];
+        if (p.feature.geometry.type === 'Polygon') {
+          pCoords = (p.feature.geometry.coordinates[0] || []).slice(0, -1) as [number, number][];
+        } else if (p.feature.geometry.type === 'MultiPolygon') {
+          pCoords = p.feature.geometry.coordinates.flatMap((poly) => (poly[0] || []).slice(0, -1)) as [number, number][];
+        }
+
+        pCoords.forEach(([lng, lat]) => {
+          rawNodes.push({
+            lng,
+            lat,
+            isCadastral: false,
+            isIfrazCut: true,
+            parcelName: p.name
+          });
+        });
+      });
+    }
+
+    if (rawNodes.length === 0) return;
+
+    // Deduplicate nearby nodes within ~0.3 meters (~0.000003 deg)
+    const uniqueNodes: UniqueVertexNode[] = [];
+
+    for (const item of rawNodes) {
+      let matched = false;
+      for (const existing of uniqueNodes) {
+        const dLng = item.lng - existing.lng;
+        const dLat = item.lat - existing.lat;
+        const distDeg = Math.sqrt(dLng * dLng + dLat * dLat);
+        if (distDeg < 0.000004) {
+          matched = true;
+          if (item.isCadastral) existing.isCadastral = true;
+          if (item.isIfrazCut) existing.isIfrazCut = true;
+          if (item.parcelName && !existing.parcelNames.includes(item.parcelName)) {
+            existing.parcelNames.push(item.parcelName);
+          }
+          break;
+        }
+      }
+
+      if (!matched) {
+        uniqueNodes.push({
+          lng: item.lng,
+          lat: item.lat,
+          isCadastral: item.isCadastral,
+          isIfrazCut: item.isIfrazCut,
+          parcelNames: item.parcelName ? [item.parcelName] : []
+        });
+      }
+    }
+
+    // Render Circle Markers (Daire Noktaları) on vertexPane
+    uniqueNodes.forEach((node, idx) => {
+      const isIntersection = node.isCadastral && node.isIfrazCut;
+      const isIfrazInternal = !node.isCadastral && node.isIfrazCut;
+
+      const pointIndex = idx + 1;
+      let pointTypeLabel = 'Balastro Köşesi';
+      let fillColor = '#06b6d4'; // Cyan
+      let outlineColor = '#083344';
+      let radius = 6;
+      let badgeClass = 'cadastral';
+
+      if (isIntersection) {
+        pointTypeLabel = 'İfraz & Sınır Kırığı';
+        fillColor = '#38bdf8'; // Sky blue
+        outlineColor = '#0c4a6e';
+        radius = 6;
+        badgeClass = 'cadastral';
+      } else if (isIfrazInternal) {
+        pointTypeLabel = 'İfraz/Tevhit Kırık Noktası';
+        fillColor = '#f59e0b'; // Amber
+        outlineColor = '#451a03';
+        radius = 5.5;
+        badgeClass = 'ifraz';
+      }
+
+      const circle = L.circleMarker([node.lat, node.lng], {
+        pane: 'vertexPane',
+        radius,
+        fillColor,
+        color: outlineColor,
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 0.95
+      }).addTo(vertexMarkersGroupRef.current!);
+
+      // Hover expand effect
+      circle.on('mouseover', () => {
+        circle.setRadius(radius + 2);
+        circle.setStyle({ weight: 3 });
+      });
+      circle.on('mouseout', () => {
+        circle.setRadius(radius);
+        circle.setStyle({ weight: 2 });
+      });
+
+      // Interactive Click Popup with full CAD Coordinates
+      const popupContent = `
+        <div class="px-2.5 py-1.5 font-mono text-center text-slate-100 select-text">
+          <div class="flex items-center justify-center gap-1.5 font-bold text-xs ${
+            isIfrazInternal ? 'text-amber-400' : 'text-cyan-400'
+          }">
+            <span>●</span>
+            <span>Nokta #${pointIndex}</span>
+            <span class="text-[10px] font-normal text-slate-300">(${pointTypeLabel})</span>
+          </div>
+          <div class="text-[11px] text-slate-200 mt-1.5 flex justify-between gap-3 border-t border-white/10 pt-1">
+            <span class="text-slate-400">Y (Enlem):</span>
+            <span class="font-bold font-mono text-emerald-400">${node.lat.toFixed(6)}</span>
+          </div>
+          <div class="text-[11px] text-slate-200 flex justify-between gap-3">
+            <span class="text-slate-400">X (Boylam):</span>
+            <span class="font-bold font-mono text-emerald-400">${node.lng.toFixed(6)}</span>
+          </div>
+          ${
+            node.parcelNames.length > 0
+              ? `<div class="text-[9.5px] text-slate-300 mt-1 pt-1 border-t border-white/10 truncate max-w-[200px]">
+                   Ait Parseller: <b>${node.parcelNames.join(', ')}</b>
+                 </div>`
+              : ''
+          }
+        </div>
+      `;
+
+      circle.bindPopup(popupContent, {
+        className: 'apple-glass-popup'
+      });
+
+      // Small permanent numbering badge next to the point
+      circle.bindTooltip(String(pointIndex), {
+        permanent: true,
+        direction: 'right',
+        offset: [8, 0],
+        className: `vertex-point-badge ${badgeClass}`
+      });
+    });
+  }, [mainPolygon, parcels, secondaryParcels, mapSettings.showCadastre]);
 
   const handleToggleDrawPolygon = () => {
     const map = mapRef.current;
@@ -1189,6 +1405,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {[
             {
+              key: 'showCadastre',
+              label: 'Balastro',
+              title: 'Balastro Köşe & İfraz/Tevhit Kırık Daire Noktalarını Aç / Kapat',
+              icon: Landmark,
+              activeColor: 'text-cyan-400'
+            },
+            {
               key: 'showFill',
               label: 'Dolgu',
               title: 'Parsel Dolgularını Aç / Kapat',
@@ -1217,7 +1440,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               activeColor: 'text-purple-400'
             }
           ].map((item) => {
-            const isChecked = !!(mapSettings as any)[item.key];
+            const isChecked =
+              item.key === 'showCadastre'
+                ? (mapSettings.showCadastre ?? true)
+                : !!(mapSettings as any)[item.key];
             const Icon = item.icon;
             return (
               <button

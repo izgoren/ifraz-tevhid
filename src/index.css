@@ -134,6 +134,34 @@
     box-shadow: 0 4px 16px rgba(217, 119, 6, 0.4) !important;
   }
 
+  /* Balastro & İfraz Daire Noktası Numaralandırma Rozeti */
+  .vertex-point-badge {
+    background: rgba(8, 14, 28, 0.9) !important;
+    backdrop-filter: blur(10px) !important;
+    -webkit-backdrop-filter: blur(10px) !important;
+    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+    color: #38bdf8 !important;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+    font-size: 9px !important;
+    font-weight: 700 !important;
+    padding: 0px 4.5px !important;
+    border-radius: 9999px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5) !important;
+    white-space: nowrap !important;
+    user-select: none !important;
+    pointer-events: none !important;
+  }
+
+  .vertex-point-badge.cadastral {
+    color: #22d3ee !important;
+    border-color: rgba(34, 211, 238, 0.5) !important;
+  }
+
+  .vertex-point-badge.ifraz {
+    color: #fbbf24 !important;
+    border-color: rgba(251, 191, 36, 0.5) !important;
+  }
+
   /* Apple Slender Scrollbars */
   ::-webkit-scrollbar {
     width: 5px;
