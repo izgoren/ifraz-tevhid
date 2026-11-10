@@ -739,11 +739,43 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
               {/* Parça Sayısı Popover */}
               {showPiecePopover && (
-                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                <div className="absolute left-full top-0 ml-2 z-[1100] w-72 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
                   <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
                     <span className="text-xs font-semibold text-slate-200">Parça Sayısı (İfraz Adedi)</span>
-                    <span className="text-xs font-mono font-bold text-blue-400">
-                      {config.pieceCount === 0 ? '0 (İfrazsız)' : `${config.pieceCount} Parsel`}
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleConfigChange('pieceCount', Math.max(0, (config.pieceCount || 0) - 1))}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 text-xs flex items-center justify-center text-slate-300 hover:text-white transition active:scale-90"
+                        title="1 Azalt"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={0}
+                        max={60}
+                        value={config.pieceCount}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10);
+                          handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, Math.min(60, val)));
+                        }}
+                        className="w-12 h-6 px-1 text-center bg-black/40 border border-white/20 rounded font-mono font-bold text-xs text-blue-400 focus:outline-none focus:border-blue-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleConfigChange('pieceCount', Math.min(60, (config.pieceCount || 0) + 1))}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 text-xs flex items-center justify-center text-slate-300 hover:text-white transition active:scale-90"
+                        title="1 Arttır"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-slate-400">
+                    <span>Durum:</span>
+                    <span className="font-mono font-semibold text-blue-300">
+                      {config.pieceCount === 0 ? 'İfrazsız (Ana Parsel)' : config.pieceCount === 1 ? '1 Parsel (Tek Parsel)' : `${config.pieceCount} Parsel`}
                     </span>
                   </div>
                   <input
@@ -752,23 +784,23 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     max={60}
                     value={config.pieceCount}
                     onChange={(e) => {
-                      const val = parseInt(e.target.value);
-                      handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, val));
+                      const val = parseInt(e.target.value, 10);
+                      handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, Math.min(60, val)));
                     }}
                     className="w-full h-1.5 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
                   />
                   <div className="grid grid-cols-5 gap-1 pt-0.5">
-                    {[0, 2, 4, 6, 8, 10, 12, 16, 20, 30].map((num) => (
+                    {[0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 30, 40].map((num) => (
                       <button
                         key={num}
                         onClick={() => handleConfigChange('pieceCount', num)}
                         className={`text-[10px] py-1 rounded-lg font-mono transition border ${
                           config.pieceCount === num
-                            ? 'bg-blue-500 text-white font-bold border-blue-400'
+                            ? 'bg-blue-500 text-white font-bold border-blue-400 shadow-sm shadow-blue-500/40'
                             : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
                         }`}
                       >
-                        {num}
+                        {num === 0 ? '0' : num === 1 ? '1 (Tek)' : num}
                       </button>
                     ))}
                   </div>

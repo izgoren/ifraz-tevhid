@@ -11,9 +11,12 @@ import { estimateSoilClassification } from './soilEstimation';
 export function sliceEqualAreaPolygon(
   poly: ParcelGeometry,
   pieceCount: number,
-  angleDegrees: number
+  angleDegrees: number = 0
 ): Feature<Polygon>[] {
-  if (!poly || pieceCount <= 0) return [];
+  if (!poly) return [];
+
+  const safeCount = Math.max(1, Math.floor(Number(pieceCount) || 1));
+  const safeAngle = Number.isFinite(Number(angleDegrees)) ? Number(angleDegrees) : 0;
 
   // Handle MultiPolygon by taking primary outer boundary or dissolving
   let singlePoly: Feature<Polygon>;
@@ -24,25 +27,39 @@ export function sliceEqualAreaPolygon(
     singlePoly = poly as Feature<Polygon>;
   }
 
+  // If 1 piece requested, return the single intact polygon immediately
+  if (safeCount <= 1) {
+    return [singlePoly];
+  }
+
   const center = turf.centerOfMass(singlePoly);
-  // Rotate polygon by -angle to perform axis-aligned horizontal (X-axis) slicing
-  const rotatedPoly = turf.transformRotate(singlePoly, -angleDegrees, { pivot: center });
+  // Rotate polygon by -safeAngle to perform axis-aligned horizontal (X-axis) slicing
+  let rotatedPoly: Feature<Polygon>;
+  try {
+    rotatedPoly = safeAngle !== 0 ? turf.transformRotate(singlePoly, -safeAngle, { pivot: center }) : singlePoly;
+  } catch {
+    rotatedPoly = singlePoly;
+  }
+
   const totalArea = turf.area(rotatedPoly);
+  if (totalArea <= 0) return [singlePoly];
 
-  if (totalArea <= 0) return [];
-
-  const targetArea = totalArea / pieceCount;
-  const areaTolerance = Math.max(0.001, targetArea * 0.0001); // 0.01% area error limit
+  const targetArea = totalArea / safeCount;
+  const areaTolerance = Math.max(0.01, targetArea * 0.001); // 0.1% area error limit
 
   const pieces: Feature<Polygon>[] = [];
   let remainingPoly: Feature<Polygon> | null = rotatedPoly;
 
-  for (let i = 0; i < pieceCount; i++) {
-    if (i === pieceCount - 1 || !remainingPoly) {
+  for (let i = 0; i < safeCount; i++) {
+    if (i === safeCount - 1 || !remainingPoly) {
       if (remainingPoly) {
         // Last piece takes the remaining geometry to avoid small floating point residue
-        const restoredPiece = turf.transformRotate(remainingPoly, angleDegrees, { pivot: center });
-        pieces.push(restoredPiece);
+        try {
+          const restoredPiece = safeAngle !== 0 ? turf.transformRotate(remainingPoly, safeAngle, { pivot: center }) : remainingPoly;
+          pieces.push(restoredPiece);
+        } catch {
+          pieces.push(remainingPoly);
+        }
       }
       break;
     }
@@ -50,70 +67,106 @@ export function sliceEqualAreaPolygon(
     const currentBbox = turf.bbox(remainingPoly);
     let lowX = currentBbox[0];
     let highX = currentBbox[2];
-    let bestX = highX;
+    let bestX = (lowX + highX) / 2;
 
     const yMin = currentBbox[1] - 1.0;
     const yMax = currentBbox[3] + 1.0;
 
     // Adaptive Binary Search
     let iterations = 0;
-    const maxIterations = 16;
+    const maxIterations = 20;
 
     while (lowX <= highX && iterations < maxIterations) {
       iterations++;
       const midX = (lowX + highX) / 2;
 
-      // Create test bounding box for left slice
-      const testBox = turf.bboxPolygon([currentBbox[0] - 0.001, yMin, midX, yMax]);
-      const testIntersect = turf.intersect(turf.featureCollection([remainingPoly, testBox]));
+      try {
+        // Create test bounding box for left slice
+        const testBox = turf.bboxPolygon([currentBbox[0] - 0.001, yMin, midX, yMax]);
+        const testIntersect = turf.intersect(turf.featureCollection([remainingPoly, testBox]));
 
-      const currentArea = testIntersect ? turf.area(testIntersect) : 0;
-      const areaDiff = currentArea - targetArea;
+        const currentArea = testIntersect ? turf.area(testIntersect) : 0;
+        const areaDiff = currentArea - targetArea;
 
-      if (Math.abs(areaDiff) <= areaTolerance) {
+        if (Math.abs(areaDiff) <= areaTolerance) {
+          bestX = midX;
+          break;
+        }
+
+        if (currentArea < targetArea) {
+          lowX = midX;
+          bestX = midX;
+        } else {
+          bestX = midX;
+          highX = midX;
+        }
+      } catch {
         bestX = midX;
         break;
-      }
-
-      if (currentArea < targetArea) {
-        lowX = midX;
-      } else {
-        bestX = midX;
-        highX = midX;
       }
     }
 
     // Cut piece with bestX
-    const cutBox = turf.bboxPolygon([currentBbox[0] - 0.001, yMin, bestX, yMax]);
-    const intersectRes = turf.intersect(turf.featureCollection([remainingPoly, cutBox]));
+    try {
+      const cutBox = turf.bboxPolygon([currentBbox[0] - 0.001, yMin, bestX, yMax]);
+      const intersectRes = turf.intersect(turf.featureCollection([remainingPoly, cutBox]));
 
-    if (intersectRes) {
-      let pieceFeature: Feature<Polygon>;
-      if (intersectRes.geometry.type === 'MultiPolygon') {
-        pieceFeature = turf.polygon(intersectRes.geometry.coordinates[0]);
-      } else {
-        pieceFeature = intersectRes as Feature<Polygon>;
-      }
-
-      const restoredPiece = turf.transformRotate(pieceFeature, angleDegrees, { pivot: center });
-      pieces.push(restoredPiece);
-
-      // Remaining polygon for next iteration
-      const restBox = turf.bboxPolygon([bestX, yMin, currentBbox[2] + 0.001, yMax]);
-      const restIntersect = turf.intersect(turf.featureCollection([remainingPoly, restBox]));
-
-      if (restIntersect) {
-        if (restIntersect.geometry.type === 'MultiPolygon') {
-          remainingPoly = turf.polygon(restIntersect.geometry.coordinates[0]);
+      if (intersectRes) {
+        let pieceFeature: Feature<Polygon>;
+        if (intersectRes.geometry.type === 'MultiPolygon') {
+          let maxA = -1;
+          let bestCoords = intersectRes.geometry.coordinates[0];
+          for (const c of intersectRes.geometry.coordinates) {
+            const a = turf.area(turf.polygon(c));
+            if (a > maxA) {
+              maxA = a;
+              bestCoords = c;
+            }
+          }
+          pieceFeature = turf.polygon(bestCoords);
         } else {
-          remainingPoly = restIntersect as Feature<Polygon>;
+          pieceFeature = intersectRes as Feature<Polygon>;
+        }
+
+        try {
+          const restoredPiece = safeAngle !== 0 ? turf.transformRotate(pieceFeature, safeAngle, { pivot: center }) : pieceFeature;
+          pieces.push(restoredPiece);
+        } catch {
+          pieces.push(pieceFeature);
+        }
+
+        // Remaining polygon for next iteration
+        const restBox = turf.bboxPolygon([bestX, yMin, currentBbox[2] + 0.001, yMax]);
+        const restIntersect = turf.intersect(turf.featureCollection([remainingPoly, restBox]));
+
+        if (restIntersect) {
+          if (restIntersect.geometry.type === 'MultiPolygon') {
+            let maxA = -1;
+            let bestCoords = restIntersect.geometry.coordinates[0];
+            for (const c of restIntersect.geometry.coordinates) {
+              const a = turf.area(turf.polygon(c));
+              if (a > maxA) {
+                maxA = a;
+                bestCoords = c;
+              }
+            }
+            remainingPoly = turf.polygon(bestCoords);
+          } else {
+            remainingPoly = restIntersect as Feature<Polygon>;
+          }
+        } else {
+          remainingPoly = null;
         }
       } else {
-        remainingPoly = null;
+        break;
       }
-    } else {
+    } catch {
       break;
     }
+  }
+
+  if (pieces.length === 0) {
+    return [singlePoly];
   }
 
   return pieces;
@@ -811,7 +864,10 @@ export function sliceTrapezoidByRoadFrontage(
   parallelMode: 'west' | 'east' | 'average' | 'bisector' | 'interpolated' | 'left' | 'right' | 'perpendicular' = 'average',
   isNaturalContour: boolean = true
 ): Feature<Polygon>[] {
-  if (!poly || pieceCount <= 1) {
+  const safeCount = Math.max(1, Math.floor(Number(pieceCount) || 1));
+  const fallbackAngle = Number.isFinite(roadEdge?.perpAngle) ? roadEdge.perpAngle : 0;
+
+  if (!poly || safeCount <= 1) {
     if (poly.geometry.type === 'Polygon') {
       return [poly as Feature<Polygon>];
     } else {
@@ -834,7 +890,7 @@ export function sliceTrapezoidByRoadFrontage(
   const rearLengthM = flanks ? flanks.rearLengthM : 0;
 
   if (roadLengthM <= 1) {
-    return sliceEqualAreaPolygon(poly, pieceCount, roadEdge.perpAngle);
+    return sliceEqualAreaPolygon(poly, safeCount, fallbackAngle);
   }
 
   const MIN_SIDE_M = 10.0; // Her parselin yol tarafı ve bitişi en az 10 mt olmalı
@@ -892,7 +948,7 @@ export function sliceTrapezoidByRoadFrontage(
   }
 
   if (roadCutDistsM.length === 0) {
-    return sliceEqualAreaPolygon(poly, pieceCount, roadEdge.perpAngle);
+    return sliceEqualAreaPolygon(poly, safeCount, fallbackAngle);
   }
 
   // Normal direction from road edge (inward perpendicular)
@@ -1136,7 +1192,7 @@ export function sliceTrapezoidByRoadFrontage(
     return validPieces;
   }
 
-  return sliceEqualAreaPolygon(poly, pieceCount, roadEdge.perpAngle);
+  return sliceEqualAreaPolygon(poly, safeCount, fallbackAngle);
 }
 
 /**
@@ -1147,68 +1203,25 @@ export function runSubdivisionProcess(
   config: SubdivisionConfig,
   roadLines: Feature<LineString | MultiPolygon>[] = []
 ): GeneratedParcel[] {
-  if (!mainPoly || !config.pieceCount || config.pieceCount <= 0) return [];
+  if (!mainPoly) return [];
+  const safeCount = Math.max(0, Math.floor(Number(config?.pieceCount) || 0));
+  if (safeCount <= 0) return [];
 
-  // 1. Yamuk & Yol Cepheli Otomatik İfraz Modu
-  if (config.subdivisionMethod === 'trapezoidFrontage' && !config.isDoubleRow) {
-    const edges = getMainPolygonEdges(mainPoly);
-    let targetEdge: ParcelEdge | undefined;
-
-    if (config.selectedFrontageEdgeIndices && config.selectedFrontageEdgeIndices.length > 0) {
-      targetEdge = edges.find((e) => config.selectedFrontageEdgeIndices!.includes(e.index));
-    }
-    if (!targetEdge && config.selectedFrontageEdgeIndex !== undefined) {
-      targetEdge = edges[config.selectedFrontageEdgeIndex];
-    }
-    if (!targetEdge && edges.length > 0) {
-      targetEdge = edges[0];
-    }
-
-    if (targetEdge) {
-      const roadIdx = targetEdge.index;
-      const numEdges = edges.length;
-
-      // Parsel Batı ve Doğu kenarlarını otomatik tespit et
-      const { westEdge: autoWest, eastEdge: autoEast } = identifyEastWestEdges(edges, roadIdx);
-
-      let westEdge: ParcelEdge | undefined;
-      let eastEdge: ParcelEdge | undefined;
-
-      const userWestIdx = config.westEdgeIndex ?? config.leftSideEdgeIndex;
-      if (userWestIdx !== undefined && edges[userWestIdx]) {
-        westEdge = edges[userWestIdx];
-      } else {
-        westEdge = autoWest ?? (numEdges >= 3 ? edges[(roadIdx - 1 + numEdges) % numEdges] : undefined);
-      }
-
-      const userEastIdx = config.eastEdgeIndex ?? config.rightSideEdgeIndex;
-      if (userEastIdx !== undefined && edges[userEastIdx]) {
-        eastEdge = edges[userEastIdx];
-      } else {
-        eastEdge = autoEast ?? (numEdges >= 3 ? edges[(roadIdx + 1) % numEdges] : undefined);
-      }
-
-      const trapezoidPieces = sliceTrapezoidByRoadFrontage(
+  try {
+    // 0. Tek Parsel Modu (İfrazsız tek parsel görünümü ve metrikleri)
+    if (safeCount === 1) {
+      const areaM2 = turf.area(mainPoly);
+      const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(
         mainPoly,
-        targetEdge,
-        config.pieceCount,
-        config.frontageDistanceM,
-        config.isFixedFrontage || false,
-        westEdge,
-        eastEdge,
-        config.parallelReferenceMode || 'average',
-        config.isNaturalContour ?? true
+        areaM2,
+        config,
+        roadLines
       );
-
-      const generatedParcels: GeneratedParcel[] = [];
-      trapezoidPieces.forEach((feat, idx) => {
-        const areaM2 = turf.area(feat);
-        const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(feat, areaM2, config, roadLines);
-
-        generatedParcels.push({
-          id: `parcel-${idx + 1}`,
-          name: `Parsel ${idx + 1}`,
-          feature: feat as ParcelGeometry,
+      return [
+        {
+          id: 'parcel-1',
+          name: 'Parsel 1',
+          feature: mainPoly,
           areaM2: Math.round(areaM2 * 100) / 100,
           frontageM,
           rearWidthM,
@@ -1218,86 +1231,220 @@ export function runSubdivisionProcess(
           topography,
           soilClassification,
           rowGroup: 'single'
+        }
+      ];
+    }
+
+    // 1. Yamuk & Yol Cepheli Otomatik İfraz Modu
+    if (config.subdivisionMethod === 'trapezoidFrontage' && !config.isDoubleRow) {
+      try {
+        const edges = getMainPolygonEdges(mainPoly);
+        let targetEdge: ParcelEdge | undefined;
+
+        if (config.selectedFrontageEdgeIndices && config.selectedFrontageEdgeIndices.length > 0) {
+          targetEdge = edges.find((e) => config.selectedFrontageEdgeIndices!.includes(e.index));
+        }
+        if (!targetEdge && config.selectedFrontageEdgeIndex !== undefined && edges[config.selectedFrontageEdgeIndex]) {
+          targetEdge = edges[config.selectedFrontageEdgeIndex];
+        }
+        if (!targetEdge && edges.length > 0) {
+          targetEdge = edges[0];
+        }
+
+        if (targetEdge) {
+          const roadIdx = targetEdge.index;
+          const numEdges = edges.length;
+
+          // Parsel Batı ve Doğu kenarlarını otomatik tespit et
+          const { westEdge: autoWest, eastEdge: autoEast } = identifyEastWestEdges(edges, roadIdx);
+
+          let westEdge: ParcelEdge | undefined;
+          let eastEdge: ParcelEdge | undefined;
+
+          const userWestIdx = config.westEdgeIndex ?? config.leftSideEdgeIndex;
+          if (userWestIdx !== undefined && edges[userWestIdx]) {
+            westEdge = edges[userWestIdx];
+          } else {
+            westEdge = autoWest ?? (numEdges >= 3 ? edges[(roadIdx - 1 + numEdges) % numEdges] : undefined);
+          }
+
+          const userEastIdx = config.eastEdgeIndex ?? config.rightSideEdgeIndex;
+          if (userEastIdx !== undefined && edges[userEastIdx]) {
+            eastEdge = edges[userEastIdx];
+          } else {
+            eastEdge = autoEast ?? (numEdges >= 3 ? edges[(roadIdx + 1) % numEdges] : undefined);
+          }
+
+          const trapezoidPieces = sliceTrapezoidByRoadFrontage(
+            mainPoly,
+            targetEdge,
+            safeCount,
+            config.frontageDistanceM,
+            config.isFixedFrontage || false,
+            westEdge,
+            eastEdge,
+            config.parallelReferenceMode || 'average',
+            config.isNaturalContour ?? true
+          );
+
+          if (trapezoidPieces && trapezoidPieces.length > 0) {
+            const generatedParcels: GeneratedParcel[] = [];
+            trapezoidPieces.forEach((feat, idx) => {
+              const areaM2 = turf.area(feat);
+              const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(
+                feat,
+                areaM2,
+                config,
+                roadLines
+              );
+
+              generatedParcels.push({
+                id: `parcel-${idx + 1}`,
+                name: `Parsel ${idx + 1}`,
+                feature: feat as ParcelGeometry,
+                areaM2: Math.round(areaM2 * 100) / 100,
+                frontageM,
+                rearWidthM,
+                depthM,
+                isValid,
+                validationReasons: reasons,
+                topography,
+                soilClassification,
+                rowGroup: 'single'
+              });
+            });
+
+            return generatedParcels;
+          }
+        }
+      } catch (trapErr) {
+        console.warn('Trapezoid subdivision fell back to equal area:', trapErr);
+      }
+    }
+
+    // 2. Çift Sıra / Eşit Alan Bölümleme Modu
+    const rowPolygons: { geometry: ParcelGeometry; group: 'single' | 'top' | 'bottom' }[] = [];
+
+    if (config.isDoubleRow && safeCount >= 2) {
+      try {
+        const bbox = turf.bbox(mainPoly);
+        const axisPos = Number.isFinite(config.axisPosition) ? config.axisPosition : 50;
+        const posRatio = Math.max(0.1, Math.min(0.9, axisPos / 100));
+        const splitY = bbox[1] + (bbox[3] - bbox[1]) * posRatio;
+
+        let leftAngleVal = 0;
+        let rightAngleVal = 0;
+
+        if (config.isSplitAngles) {
+          leftAngleVal = Number.isFinite(config.leftAngle) ? config.leftAngle : 0;
+          rightAngleVal = Number.isFinite(config.rightAngle) ? config.rightAngle : 0;
+        } else {
+          const cAngle = Number.isFinite(config.commonAngle) ? config.commonAngle : 0;
+          leftAngleVal = cAngle;
+          rightAngleVal = cAngle;
+        }
+
+        const pivotPoint = turf.point([(bbox[0] + bbox[2]) / 2, splitY]);
+
+        let box1 = turf.bboxPolygon([bbox[0] - 0.2, bbox[1] - 0.2, bbox[2] + 0.2, splitY]);
+        let box2 = turf.bboxPolygon([bbox[0] - 0.2, splitY, bbox[2] + 0.2, bbox[3] + 0.2]);
+
+        if (leftAngleVal !== 0) {
+          try {
+            box1 = turf.transformRotate(box1, leftAngleVal, { pivot: pivotPoint });
+          } catch {}
+        }
+        if (rightAngleVal !== 0) {
+          try {
+            box2 = turf.transformRotate(box2, rightAngleVal, { pivot: pivotPoint });
+          } catch {}
+        }
+
+        const row1 = turf.intersect(turf.featureCollection([mainPoly, box1]));
+        const row2 = turf.intersect(turf.featureCollection([mainPoly, box2]));
+
+        if (row1 && turf.area(row1) > 1) rowPolygons.push({ geometry: row1 as ParcelGeometry, group: 'bottom' });
+        if (row2 && turf.area(row2) > 1) rowPolygons.push({ geometry: row2 as ParcelGeometry, group: 'top' });
+      } catch (rowErr) {
+        console.warn('Double row split failed, reverting to single row:', rowErr);
+      }
+    }
+
+    if (rowPolygons.length === 0) {
+      rowPolygons.push({ geometry: mainPoly, group: 'single' });
+    }
+
+    const generatedParcels: GeneratedParcel[] = [];
+    const numRows = rowPolygons.length;
+    let parcelCounter = 1;
+    const safeRotate = Number.isFinite(config.rotateAngle) ? config.rotateAngle : 0;
+
+    rowPolygons.forEach(({ geometry, group }, rIdx) => {
+      let rowPiecesCount = Math.floor(safeCount / numRows);
+      if (rIdx < safeCount % numRows) {
+        rowPiecesCount += 1;
+      }
+
+      if (rowPiecesCount > 0) {
+        const slicedFeatures = sliceEqualAreaPolygon(geometry, rowPiecesCount, safeRotate);
+
+        slicedFeatures.forEach((feat) => {
+          const areaM2 = turf.area(feat);
+          const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(
+            feat,
+            areaM2,
+            config,
+            roadLines
+          );
+
+          generatedParcels.push({
+            id: `parcel-${parcelCounter}`,
+            name: `Parsel ${parcelCounter}`,
+            feature: feat as ParcelGeometry,
+            areaM2: Math.round(areaM2 * 100) / 100,
+            frontageM,
+            rearWidthM,
+            depthM,
+            isValid,
+            validationReasons: reasons,
+            topography,
+            soilClassification,
+            rowGroup: group
+          });
+
+          parcelCounter++;
         });
-      });
+      }
+    });
 
-      return generatedParcels;
-    }
+    return generatedParcels;
+  } catch (err: any) {
+    console.error('runSubdivisionProcess unexpected error, graceful recovery:', err);
+    // Graceful recovery: return intact parcel as single parcel
+    const areaM2 = turf.area(mainPoly);
+    const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(
+      mainPoly,
+      areaM2,
+      config,
+      roadLines
+    );
+    return [
+      {
+        id: 'parcel-1',
+        name: 'Parsel 1',
+        feature: mainPoly,
+        areaM2: Math.round(areaM2 * 100) / 100,
+        frontageM,
+        rearWidthM,
+        depthM,
+        isValid,
+        validationReasons: reasons,
+        topography,
+        soilClassification,
+        rowGroup: 'single'
+      }
+    ];
   }
-
-  const rowPolygons: { geometry: ParcelGeometry; group: 'single' | 'top' | 'bottom' }[] = [];
-
-  if (config.isDoubleRow) {
-    const bbox = turf.bbox(mainPoly);
-    const posRatio = Math.max(0.1, Math.min(0.9, config.axisPosition / 100));
-    const splitY = bbox[1] + (bbox[3] - bbox[1]) * posRatio;
-
-    let leftAngleVal = 0;
-    let rightAngleVal = 0;
-
-    if (config.isSplitAngles) {
-      leftAngleVal = config.leftAngle;
-      rightAngleVal = config.rightAngle;
-    } else {
-      leftAngleVal = config.commonAngle;
-      rightAngleVal = config.commonAngle;
-    }
-
-    const pivotPoint = turf.point([(bbox[0] + bbox[2]) / 2, splitY]);
-
-    let box1 = turf.bboxPolygon([bbox[0] - 0.2, bbox[1] - 0.2, bbox[2] + 0.2, splitY]);
-    let box2 = turf.bboxPolygon([bbox[0] - 0.2, splitY, bbox[2] + 0.2, bbox[3] + 0.2]);
-
-    if (leftAngleVal !== 0) box1 = turf.transformRotate(box1, leftAngleVal, { pivot: pivotPoint });
-    if (rightAngleVal !== 0) box2 = turf.transformRotate(box2, rightAngleVal, { pivot: pivotPoint });
-
-    const row1 = turf.intersect(turf.featureCollection([mainPoly, box1]));
-    const row2 = turf.intersect(turf.featureCollection([mainPoly, box2]));
-
-    if (row1) rowPolygons.push({ geometry: row1 as ParcelGeometry, group: 'bottom' });
-    if (row2) rowPolygons.push({ geometry: row2 as ParcelGeometry, group: 'top' });
-  } else {
-    rowPolygons.push({ geometry: mainPoly, group: 'single' });
-  }
-
-  const generatedParcels: GeneratedParcel[] = [];
-  const numRows = rowPolygons.length;
-  let parcelCounter = 1;
-
-  rowPolygons.forEach(({ geometry, group }, rIdx) => {
-    let rowPiecesCount = Math.floor(config.pieceCount / numRows);
-    if (rIdx < config.pieceCount % numRows) {
-      rowPiecesCount += 1;
-    }
-
-    if (rowPiecesCount > 0) {
-      const slicedFeatures = sliceEqualAreaPolygon(geometry, rowPiecesCount, config.rotateAngle);
-
-      slicedFeatures.forEach((feat) => {
-        const areaM2 = turf.area(feat);
-        const { isValid, frontageM, depthM, rearWidthM, reasons, topography, soilClassification } = validateParcel(feat, areaM2, config, roadLines);
-
-        generatedParcels.push({
-          id: `parcel-${parcelCounter}`,
-          name: `Parsel ${parcelCounter}`,
-          feature: feat as ParcelGeometry,
-          areaM2: Math.round(areaM2 * 100) / 100,
-          frontageM,
-          rearWidthM,
-          depthM,
-          isValid,
-          validationReasons: reasons,
-          topography,
-          soilClassification,
-          rowGroup: group
-        });
-
-        parcelCounter++;
-      });
-    }
-  });
-
-  return generatedParcels;
 }
 
 /**
@@ -1458,7 +1605,9 @@ export function calculateMultiEdgeFrontage(
   }
 
   let compositeBearing = Math.round(((Math.atan2(sumDx, sumDy) * 180) / Math.PI + 360) % 360);
+  if (!Number.isFinite(compositeBearing)) compositeBearing = 0;
   let perpAngle = Math.round(((compositeBearing + 90) % 180 + 180) % 180);
+  if (!Number.isFinite(perpAngle)) perpAngle = 0;
 
   return {
     totalLengthM,

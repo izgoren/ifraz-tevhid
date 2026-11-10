@@ -259,7 +259,17 @@ export default function App() {
   useEffect(() => {
     if (!mainPolygon) return;
 
-    // If user made manual CAD edits, don't auto-recalculate unless main polygon or piece count changes
+    // If piece count is 0, user is in unsubdivided mode
+    if (!config.pieceCount || config.pieceCount <= 0) {
+      setParcels([]);
+      setSelectedParcelIds([]);
+      isCadDirtyRef.current = false;
+      setStatusMessage(
+        `İfrazsız mod (Parça sayısı: 0). Parça sayısını seçerek ifraz işlemini başlatabilirsiniz (${cadastralInfo.il} / ${cadastralInfo.ilce} • Ada: ${cadastralInfo.adaNo}, Parsel: ${cadastralInfo.parselNo}).`
+      );
+      return;
+    }
+
     try {
       const generated = runSubdivisionProcess(mainPolygon, config, roadLines);
       setParcels(generated);
@@ -267,7 +277,11 @@ export default function App() {
       isCadDirtyRef.current = false;
 
       const invalidCount = generated.filter((p) => !p.isValid).length;
-      if (invalidCount > 0) {
+      if (generated.length === 1) {
+        setStatusMessage(
+          `1 Parsel (Tek Parsel • Ada: ${cadastralInfo.adaNo}, Parsel: ${cadastralInfo.parselNo} • ${generated[0]?.areaM2} m²).`
+        );
+      } else if (invalidCount > 0) {
         setStatusMessage(
           `${generated.length} Parsel Oluşturuldu (${invalidCount} adedi asgari cephe/alan sınırını sağlamıyor).`
         );
@@ -290,6 +304,13 @@ export default function App() {
     }
     pushUndoState('İfraz Güncellendi');
     try {
+      if (!config.pieceCount || config.pieceCount <= 0) {
+        setParcels([]);
+        setSelectedParcelIds([]);
+        isCadDirtyRef.current = false;
+        setStatusMessage('İfrazsız moddasınız. Parça sayısını belirleyerek ifrazı başlatabilirsiniz.');
+        return;
+      }
       const generated = runSubdivisionProcess(mainPolygon, config, roadLines);
       setParcels(generated);
       setSelectedParcelIds([]);
