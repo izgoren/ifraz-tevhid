@@ -14,7 +14,9 @@ import {
   ChevronRight,
   MapPin,
   FileCode,
-  Info
+  Info,
+  Mountain,
+  TrendingUp
 } from 'lucide-react';
 import { LoadedCadastralFile, LoadedCadastralParcel, ParcelGeometry } from '../types';
 import { triggerFileDownload } from '../utils/kmlExporter';
@@ -30,6 +32,7 @@ interface CadastralAttributeDrawerProps {
   onRemoveParcel?: (parcelId: string) => void;
   onMergeParcels?: (parcels: LoadedCadastralParcel[]) => void;
   onUploadAdditionalKML?: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onOpenSoilAnalysis?: (parcel: LoadedCadastralParcel, tab?: 'soil' | 'slope') => void;
 }
 
 export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> = ({
@@ -42,7 +45,8 @@ export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> =
   onRemoveFile,
   onRemoveParcel,
   onMergeParcels,
-  onUploadAdditionalKML
+  onUploadAdditionalKML,
+  onOpenSoilAnalysis
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedFileFilter, setSelectedFileFilter] = useState<string>('all');
@@ -108,23 +112,34 @@ export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> =
       'Nitelik',
       'Hesaplanan Alan (m2)',
       'Tapu Alanı (m2)',
+      'Zemin Sınıfı (TBDY 2018)',
+      'Vs30 (m/s)',
+      'Taşıma Gücü qa (kg/cm2)',
+      'Sıvılaşma Riski',
       'Aktif Çalışma Parseli'
     ];
 
-    const rows = allParcels.map((p, idx) => [
-      idx + 1,
-      `"${p.fileName}"`,
-      `"${p.cadastralInfo.il}"`,
-      `"${p.cadastralInfo.ilce}"`,
-      `"${p.cadastralInfo.mahalle}"`,
-      `"${p.cadastralInfo.adaNo}"`,
-      `"${p.cadastralInfo.parselNo}"`,
-      `"${p.cadastralInfo.mevkii || ''}"`,
-      `"${p.cadastralInfo.nitelik || ''}"`,
-      p.areaM2.toFixed(2),
-      p.cadastralInfo.tapuAlaniM2?.toFixed(2) || '',
-      p.id === activeParcelId ? 'EVET' : 'HAYIR'
-    ]);
+    const rows = allParcels.map((p, idx) => {
+      const s = p.soilClassification;
+      return [
+        idx + 1,
+        `"${p.fileName}"`,
+        `"${p.cadastralInfo.il}"`,
+        `"${p.cadastralInfo.ilce}"`,
+        `"${p.cadastralInfo.mahalle}"`,
+        `"${p.cadastralInfo.adaNo}"`,
+        `"${p.cadastralInfo.parselNo}"`,
+        `"${p.cadastralInfo.mevkii || ''}"`,
+        `"${p.cadastralInfo.nitelik || ''}"`,
+        p.areaM2.toFixed(2),
+        p.cadastralInfo.tapuAlaniM2?.toFixed(2) || '',
+        `"${s?.soilClass || 'ZC'}"`,
+        s?.vs30 || '',
+        s?.bearingCapacityKgCm2 || '',
+        `"${s?.liquefactionRisk || 'Yok'}"`,
+        p.id === activeParcelId ? 'EVET' : 'HAYIR'
+      ];
+    });
 
     const csvContent = '\uFEFF' + [headers.join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
     triggerFileDownload(csvContent, 'Yuklenen_Kadastro_Oznitelik_Tablosu.csv', 'text/csv;charset=utf-8;');
@@ -317,6 +332,8 @@ export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> =
                     <th className="py-2.5 px-3">Nitelik</th>
                     <th className="py-2.5 px-3 text-right">Alan (m²)</th>
                     <th className="py-2.5 px-3 text-right">Tapu Alanı</th>
+                    <th className="py-2.5 px-3 text-center">Eğim / Uygunluk</th>
+                    <th className="py-2.5 px-3 text-center">Zemin (TBDY)</th>
                     <th className="py-2.5 px-3 text-center w-28">Eylemler</th>
                   </tr>
                 </thead>
@@ -420,6 +437,42 @@ export const CadastralAttributeDrawer: React.FC<CadastralAttributeDrawerProps> =
                             {parcel.cadastralInfo.tapuAlaniM2
                               ? `${parcel.cadastralInfo.tapuAlaniM2.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} m²`
                               : '—'}
+                          </td>
+
+                          {/* Topoğrafik Eğim & Yerleşime Uygunluk */}
+                          <td className="py-2 px-3 text-center">
+                            {parcel.topography ? (
+                              <button
+                                onClick={() => onOpenSoilAnalysis?.(parcel, 'slope')}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 hover:bg-emerald-500/25 transition cursor-pointer"
+                                title={`Eğim: %${parcel.topography.avgSlopePercent} (${parcel.topography.avgSlopeDegrees}°) | Kot Farkı: ${parcel.topography.elevationDiffM}m | ${parcel.topography.category}`}
+                              >
+                                <TrendingUp className="w-2.5 h-2.5 text-emerald-400" />
+                                <span>%{parcel.topography.avgSlopePercent}</span>
+                                <span className="text-[9px] text-slate-400 font-normal">
+                                  ({parcel.topography.complianceStatus === 'uygun' ? 'UÖ' : 'ÖA'})
+                                </span>
+                              </button>
+                            ) : (
+                              <span className="text-slate-500 font-mono text-[10px]">—</span>
+                            )}
+                          </td>
+
+                          {/* Zemin Sınıfı (TBDY 2018) */}
+                          <td className="py-2 px-3 text-center">
+                            {parcel.soilClassification ? (
+                              <button
+                                onClick={() => onOpenSoilAnalysis?.(parcel, 'soil')}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-amber-500/15 text-amber-300 border border-amber-500/30 hover:bg-amber-500/25 transition cursor-pointer"
+                                title={`${parcel.soilClassification.className} | qa: ${parcel.soilClassification.bearingCapacityKgCm2} kg/cm² | Vs30: ${parcel.soilClassification.vs30} m/s`}
+                              >
+                                <Mountain className="w-2.5 h-2.5 text-amber-400" />
+                                <span>{parcel.soilClassification.soilClass}</span>
+                                <span className="text-[9px] text-slate-400 font-normal">({parcel.soilClassification.bearingCapacityKgCm2} kg)</span>
+                              </button>
+                            ) : (
+                              <span className="text-slate-500 font-mono text-[10px]">—</span>
+                            )}
                           </td>
 
                           {/* Actions */}

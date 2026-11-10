@@ -1,10 +1,10 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import '@geoman-io/leaflet-geoman-free';
 import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import * as turf from '@turf/turf';
-import type { Feature, LineString } from 'geojson';
+import type { Feature, LineString, Polygon, MultiPolygon } from 'geojson';
 import { GeneratedParcel, MapSettings, ParcelGeometry, LoadedCadastralParcel } from '../types';
 import { getParcelVertices, ParcelVertex, getMainPolygonEdges, ParcelEdge } from '../utils/geometryOptimizer';
 import {
@@ -47,8 +47,14 @@ interface MapContainerProps {
   onToggleCadMode?: (active: boolean) => void;
   onChangeCadTool?: (tool: 'select' | 'vertex' | 'slice') => void;
   isSelectingFrontageEdge?: boolean;
+  edgeSelectionMode?: 'none' | 'road' | 'left' | 'right';
   selectedFrontageEdgeIndices?: number[];
+  westEdgeIndex?: number;
+  eastEdgeIndex?: number;
+  leftSideEdgeIndex?: number;
+  rightSideEdgeIndex?: number;
   onToggleFrontageEdge?: (edgeIndex: number) => void;
+  onSelectEdgeForMode?: (mode: 'road' | 'left' | 'right', edgeIndex: number) => void;
   onDoneSelectingFrontage?: () => void;
   onToggleDragMerge?: () => void;
   onChangeMapSettings?: (newSettings: MapSettings) => void;
@@ -58,6 +64,8 @@ interface MapContainerProps {
   secondaryParcels?: LoadedCadastralParcel[];
   onSelectActiveParcel?: (parcel: LoadedCadastralParcel) => void;
   onDragMergeLoadedParcels?: (draggedId: string, targetId: string) => void;
+  externalDrawTool?: 'polygon' | 'line' | 'delete' | null;
+  onActiveDrawToolChange?: (tool: 'polygon' | 'line' | 'delete' | null) => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -76,8 +84,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onToggleCadMode,
   onChangeCadTool,
   isSelectingFrontageEdge = false,
+  edgeSelectionMode = 'none',
   selectedFrontageEdgeIndices = [],
+  westEdgeIndex,
+  eastEdgeIndex,
+  leftSideEdgeIndex,
+  rightSideEdgeIndex,
   onToggleFrontageEdge,
+  onSelectEdgeForMode,
   onDoneSelectingFrontage,
   onToggleDragMerge,
   onChangeMapSettings,
@@ -86,7 +100,9 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   isAttributeDrawerOpen,
   secondaryParcels = [],
   onSelectActiveParcel,
-  onDragMergeLoadedParcels
+  onDragMergeLoadedParcels,
+  externalDrawTool,
+  onActiveDrawToolChange
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -97,12 +113,58 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const roadLinesGroupRef = useRef<L.LayerGroup | null>(null);
   const frontageEdgeGroupRef = useRef<L.LayerGroup | null>(null);
   const vertexMarkersGroupRef = useRef<L.LayerGroup | null>(null);
+  const morphAnimationGroupRef = useRef<L.LayerGroup | null>(null);
+  const drawMeasurementsGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
 
   const [showVertexTable, setShowVertexTable] = useState(false);
-  const [activeDrawTool, setActiveDrawTool] = useState<'polygon' | 'line' | 'delete' | null>(null);
+  const [activeDrawTool, setActiveDrawToolState] = useState<'polygon' | 'line' | 'delete' | null>(null);
   const [showOpacityPopover, setShowOpacityPopover] = useState(false);
   const [isRightMenuOpen, setIsRightMenuOpen] = useState(true);
+
+  // Live measurements HUD during polygon/line drawing
+  const [drawingLiveMetrics, setDrawingLiveMetrics] = useState<{
+    vertexCount: number;
+    currentEdgeLengthM: number;
+    totalPerimeterM: number;
+    approxAreaM2: number;
+    lastVertexCoords?: [number, number];
+  } | null>(null);
+
+  // Synchronized setter for activeDrawTool
+  const setActiveDrawTool = useCallback(
+    (toolOrFn: 'polygon' | 'line' | 'delete' | null | ((prev: 'polygon' | 'line' | 'delete' | null) => 'polygon' | 'line' | 'delete' | null)) => {
+      setActiveDrawToolState((prev) => {
+        const next = typeof toolOrFn === 'function' ? toolOrFn(prev) : toolOrFn;
+        if (onActiveDrawToolChange) {
+          onActiveDrawToolChange(next);
+        }
+        if (next !== 'polygon') {
+          setDrawingLiveMetrics(null);
+          if (drawMeasurementsGroupRef.current) {
+            drawMeasurementsGroupRef.current.clearLayers();
+          }
+        }
+        return next;
+      });
+    },
+    [onActiveDrawToolChange]
+  );
+
+  // Sync externalDrawTool changes with internal state
+  useEffect(() => {
+    if (externalDrawTool !== undefined && externalDrawTool !== activeDrawTool) {
+      if (externalDrawTool === 'polygon') {
+        handleToggleDrawPolygon(true);
+      } else if (externalDrawTool === null && activeDrawTool === 'polygon') {
+        const map = mapRef.current;
+        if (map) {
+          map.pm.disableDraw();
+        }
+        setActiveDrawTool(null);
+      }
+    }
+  }, [externalDrawTool]);
 
   // Active parcel for CAD Vertex Table
   const cadActiveParcel = useMemo(() => {
@@ -116,6 +178,175 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     if (!cadActiveParcel) return [];
     return getParcelVertices(cadActiveParcel.feature);
   }, [cadActiveParcel]);
+
+  // Helper to compute union geometry for visual morphing
+  const computeUnionGeometry = (
+    geomA: any,
+    geomB: any
+  ): Feature<Polygon | MultiPolygon> | null => {
+    try {
+      const featA = (geomA.type === 'Feature' ? geomA : turf.feature(geomA.geometry || geomA)) as Feature<Polygon | MultiPolygon>;
+      const featB = (geomB.type === 'Feature' ? geomB : turf.feature(geomB.geometry || geomB)) as Feature<Polygon | MultiPolygon>;
+
+      try {
+        const direct = turf.union(turf.featureCollection([featA, featB]));
+        if (direct && (direct.geometry.type === 'Polygon' || direct.geometry.type === 'MultiPolygon')) {
+          return direct as Feature<Polygon | MultiPolygon>;
+        }
+      } catch {}
+
+      const bufferedA = turf.buffer(featA, 0.00005, { units: 'kilometers' }) || featA;
+      const bufferedB = turf.buffer(featB, 0.00005, { units: 'kilometers' }) || featB;
+      const unionResult = turf.union(turf.featureCollection([bufferedA as any, bufferedB as any]));
+      if (unionResult) {
+        const unbuffered = turf.buffer(unionResult, -0.00005, { units: 'kilometers' });
+        return (unbuffered || unionResult) as Feature<Polygon | MultiPolygon>;
+      }
+    } catch (err) {
+      console.warn('computeUnionGeometry warning:', err);
+    }
+    return null;
+  };
+
+  // Fluid visual morphing animation when two parcels are merged via Drag-and-Drop
+  const playMergeMorphAnimation = useCallback(
+    (
+      geomA: any,
+      geomB: any,
+      unionGeom: any,
+      titleInfo: string,
+      contactPointGeo: any,
+      onApplyMerge: () => void
+    ) => {
+      const map = mapRef.current;
+      const morphGroup = morphAnimationGroupRef.current;
+      if (!map || !morphGroup) {
+        onApplyMerge();
+        return;
+      }
+
+      morphGroup.clearLayers();
+
+      try {
+        let contactLat = 0;
+        let contactLng = 0;
+
+        if (contactPointGeo) {
+          try {
+            const dropCenter = turf.centerOfMass(contactPointGeo);
+            contactLat = dropCenter.geometry.coordinates[1];
+            contactLng = dropCenter.geometry.coordinates[0];
+          } catch {}
+        }
+
+        if (!contactLat && unionGeom) {
+          try {
+            const uCenter = turf.centerOfMass(unionGeom);
+            contactLat = uCenter.geometry.coordinates[1];
+            contactLng = uCenter.geometry.coordinates[0];
+          } catch {}
+        }
+
+        if (!contactLat) {
+          const centerA = turf.centerOfMass(geomA);
+          const centerB = turf.centerOfMass(geomB);
+          contactLat = (centerA.geometry.coordinates[1] + centerB.geometry.coordinates[1]) / 2;
+          contactLng = (centerA.geometry.coordinates[0] + centerB.geometry.coordinates[0]) / 2;
+        }
+
+        // 1. Contact & Shockwave Ripple expanding from contact point
+        const shockwaveIcon = L.divIcon({
+          className: 'morph-shockwave-wrapper',
+          html: '<div class="morph-shockwave-circle" style="width: 140px; height: 140px; margin-left: -70px; margin-top: -70px;"></div>',
+          iconSize: [0, 0]
+        });
+        L.marker([contactLat, contactLng], {
+          icon: shockwaveIcon,
+          pane: 'morphPane',
+          interactive: false
+        }).addTo(morphGroup);
+
+        // 2. Individual Shapes A and B with glowing cyan and emerald animated vectors
+        L.geoJSON(geomA, {
+          pane: 'morphPane',
+          style: {
+            color: '#06b6d4',
+            weight: 4.5,
+            dashArray: '10, 6',
+            fillColor: '#0891b2',
+            fillOpacity: 0.35,
+            className: 'morph-anim-path'
+          }
+        }).addTo(morphGroup);
+
+        L.geoJSON(geomB, {
+          pane: 'morphPane',
+          style: {
+            color: '#10b981',
+            weight: 4.5,
+            dashArray: '10, 6',
+            fillColor: '#059669',
+            fillOpacity: 0.35,
+            className: 'morph-anim-path'
+          }
+        }).addTo(morphGroup);
+
+        // 3. Fused Combined Geometry Morph Layer (seamless boundary taking over)
+        if (unionGeom) {
+          L.geoJSON(unionGeom, {
+            pane: 'morphPane',
+            style: {
+              color: '#34d399',
+              weight: 5.5,
+              dashArray: '14, 7',
+              fillColor: '#10b981',
+              fillOpacity: 0.45,
+              className: 'morph-combined-path'
+            }
+          }).addTo(morphGroup);
+        }
+
+        // 4. Floating Holographic Celebration Badge with Sparkles
+        const celebrationIcon = L.divIcon({
+          className: 'morph-badge-wrapper',
+          html: `
+            <div class="relative flex flex-col items-center justify-center pointer-events-none select-none">
+              <div class="morph-celebration-badge px-3.5 py-1.5 rounded-xl bg-slate-900/90 border border-emerald-400 shadow-[0_0_24px_rgba(16,185,129,0.7)] backdrop-blur-md text-white text-[12px] font-bold tracking-wide flex items-center gap-2 whitespace-nowrap">
+                <span class="text-base text-emerald-400">✨</span>
+                <span class="text-emerald-300 font-extrabold">${titleInfo}</span>
+                <span class="text-[10px] bg-emerald-500/25 text-emerald-300 border border-emerald-500/40 rounded px-1.5 py-0.5">Tevhit ✓</span>
+              </div>
+              <span class="morph-sparkle-item text-emerald-300" style="left: -24px; top: -14px; animation-delay: 0.05s;">✨</span>
+              <span class="morph-sparkle-item text-amber-300" style="right: -24px; top: -16px; animation-delay: 0.2s;">🌟</span>
+              <span class="morph-sparkle-item text-cyan-300" style="left: 14px; top: -28px; animation-delay: 0.35s;">⚡</span>
+            </div>
+          `,
+          iconSize: [0, 0]
+        });
+        L.marker([contactLat, contactLng], {
+          icon: celebrationIcon,
+          pane: 'morphPane',
+          interactive: false
+        }).addTo(morphGroup);
+
+        // Trigger permanent state merge at 380ms while morph paths are actively flowing
+        setTimeout(() => {
+          onApplyMerge();
+        }, 380);
+
+        // Seamlessly clear temporary animation layers after sequence finishes
+        setTimeout(() => {
+          if (morphAnimationGroupRef.current) {
+            morphAnimationGroupRef.current.clearLayers();
+          }
+        }, 1350);
+      } catch (err) {
+        console.warn('playMergeMorphAnimation exception:', err);
+        onApplyMerge();
+      }
+    },
+    []
+  );
 
   // Initialize Map & Geoman Controls
   useEffect(() => {
@@ -141,6 +372,12 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       map.createPane('vertexPane');
       map.getPane('vertexPane')!.style.zIndex = '670';
 
+      map.createPane('morphPane');
+      map.getPane('morphPane')!.style.zIndex = '680';
+
+      map.createPane('drawMeasurementPane');
+      map.getPane('drawMeasurementPane')!.style.zIndex = '690';
+
       mainLayerGroupRef.current = L.layerGroup().addTo(map);
       secondaryParcelsGroupRef.current = L.layerGroup().addTo(map);
       piecesLayerGroupRef.current = L.layerGroup().addTo(map);
@@ -149,6 +386,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       roadLinesGroupRef.current = L.layerGroup().addTo(map);
       frontageEdgeGroupRef.current = L.layerGroup().addTo(map);
       vertexMarkersGroupRef.current = L.layerGroup().addTo(map);
+      morphAnimationGroupRef.current = L.layerGroup().addTo(map);
+      drawMeasurementsGroupRef.current = L.layerGroup().addTo(map);
 
       // Translate Geoman Drawing Controls to Turkish
       try {
@@ -193,9 +432,130 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       // Track Geoman drawing and removal states
       map.on('pm:drawend', () => {
         setActiveDrawTool((prev) => (prev === 'delete' ? prev : null));
+        setDrawingLiveMetrics(null);
+        if (drawMeasurementsGroupRef.current) {
+          drawMeasurementsGroupRef.current.clearLayers();
+        }
       });
       map.on('pm:globalremovalmodetoggled', (e: any) => {
         setActiveDrawTool(e.enabled ? 'delete' : null);
+      });
+
+      // Dynamic real-time distance and area measurements during polygon drawing
+      const updateDrawingMetrics = (currentMouseLatLng?: L.LatLng) => {
+        const drawInstance = (map.pm.Draw as any)?.Polygon;
+        if (!drawInstance || !drawInstance.enabled()) {
+          return;
+        }
+
+        const rawPoly = drawInstance._layer;
+        let coords: L.LatLng[] = [];
+        if (rawPoly && typeof rawPoly.getLatLngs === 'function') {
+          const latlngs = rawPoly.getLatLngs();
+          coords = Array.isArray(latlngs[0]) ? [...(latlngs[0] as L.LatLng[])] : [...(latlngs as L.LatLng[])];
+        }
+
+        const measureGroup = drawMeasurementsGroupRef.current;
+        if (measureGroup) {
+          measureGroup.clearLayers();
+        }
+
+        // Render persistent distance tooltips on already committed edges
+        let committedPerimeter = 0;
+        if (coords.length >= 2 && measureGroup) {
+          for (let i = 0; i < coords.length - 1; i++) {
+            const p1 = coords[i];
+            const p2 = coords[i + 1];
+            const dist = p1.distanceTo(p2);
+            committedPerimeter += dist;
+
+            const midLat = (p1.lat + p2.lat) / 2;
+            const midLng = (p1.lng + p2.lng) / 2;
+            const badgeIcon = L.divIcon({
+              className: 'draw-edge-measure-wrapper',
+              html: `<div class="draw-edge-measure-tooltip">K${i + 1}-K${i + 2}: ${dist.toFixed(1)} m</div>`,
+              iconSize: [0, 0]
+            });
+            L.marker([midLat, midLng], {
+              icon: badgeIcon,
+              pane: 'drawMeasurementPane',
+              interactive: false
+            }).addTo(measureGroup);
+          }
+        }
+
+        // Compute current live edge to mouse cursor
+        let liveEdgeM = 0;
+        let totalPerimeter = committedPerimeter;
+        let currentArea = 0;
+
+        const pointsForArea: [number, number][] = coords.map((c) => [c.lng, c.lat]);
+
+        if (currentMouseLatLng && coords.length > 0) {
+          const lastCoord = coords[coords.length - 1];
+          liveEdgeM = lastCoord.distanceTo(currentMouseLatLng);
+          totalPerimeter += liveEdgeM;
+          pointsForArea.push([currentMouseLatLng.lng, currentMouseLatLng.lat]);
+
+          // Also render live edge tooltip
+          if (measureGroup) {
+            const midLat = (lastCoord.lat + currentMouseLatLng.lat) / 2;
+            const midLng = (lastCoord.lng + currentMouseLatLng.lng) / 2;
+            const liveIcon = L.divIcon({
+              className: 'draw-edge-measure-wrapper',
+              html: `<div class="draw-edge-measure-tooltip" style="border-color: #38bdf8; background: rgba(2, 132, 199, 0.95); color: #fff;">${liveEdgeM.toFixed(1)} m (anlık)</div>`,
+              iconSize: [0, 0]
+            });
+            L.marker([midLat, midLng], {
+              icon: liveIcon,
+              pane: 'drawMeasurementPane',
+              interactive: false
+            }).addTo(measureGroup);
+          }
+        }
+
+        // Calculate polygon area if at least 3 vertices
+        if (pointsForArea.length >= 3) {
+          try {
+            const ring = [...pointsForArea];
+            if (
+              ring[0][0] !== ring[ring.length - 1][0] ||
+              ring[0][1] !== ring[ring.length - 1][1]
+            ) {
+              ring.push(ring[0]);
+            }
+            const turfPoly = turf.polygon([ring]);
+            currentArea = turf.area(turfPoly);
+          } catch {}
+        }
+
+        setDrawingLiveMetrics({
+          vertexCount: coords.length,
+          currentEdgeLengthM: liveEdgeM,
+          totalPerimeterM: totalPerimeter,
+          approxAreaM2: currentArea,
+          lastVertexCoords: coords.length > 0 ? [coords[coords.length - 1].lat, coords[coords.length - 1].lng] : undefined
+        });
+      };
+
+      map.on('mousemove', (e: L.LeafletMouseEvent) => {
+        if ((map.pm.Draw as any)?.Polygon?.enabled()) {
+          updateDrawingMetrics(e.latlng);
+        }
+      });
+
+      map.on('pm:drawstart', () => {
+        updateDrawingMetrics();
+      });
+
+      map.on('pm:vertexadded', () => {
+        updateDrawingMetrics();
+      });
+
+      map.on('pm:snap', (e: any) => {
+        if (e.snapLatLng && (map.pm.Draw as any)?.Polygon?.enabled()) {
+          updateDrawingMetrics(e.snapLatLng);
+        }
       });
 
       // Handle Geoman drawing completion
@@ -315,7 +675,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
     mainLayerGroupRef.current.clearLayers();
 
-    if (mainPolygon && (mapSettings.showCadastre ?? true)) {
+    if (mainPolygon) {
       const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
       const geoLayer = L.geoJSON(mainPolygon, {
         style: {
@@ -349,7 +709,20 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               }
 
               if (targetParcelId && onDragMergeLoadedParcels) {
-                onDragMergeLoadedParcels('main', targetParcelId);
+                const targetSec = secondaryParcels.find((p) => p.id === targetParcelId);
+                const targetGeom = targetSec ? targetSec.geometry : null;
+                const unionGeom = targetGeom ? computeUnionGeometry(mainPolygon, targetGeom) : null;
+                const approxArea = Math.round(turf.area(unionGeom || mainPolygon));
+                const targetLabel = targetSec ? `${targetSec.cadastralInfo.adaNo}/${targetSec.cadastralInfo.parselNo}` : 'Parsel';
+                const title = `Ana Parsel + ${targetLabel}: ${approxArea.toLocaleString('tr-TR')} m²`;
+
+                try {
+                  subLayer.setStyle({ opacity: 0, fillOpacity: 0 });
+                } catch {}
+
+                playMergeMorphAnimation(mainPolygon, targetGeom || droppedGeo, unionGeom, title, droppedGeo, () => {
+                  onDragMergeLoadedParcels('main', targetParcelId!);
+                });
               } else {
                 // Reset position to original
                 try {
@@ -367,14 +740,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
     }
-  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, mapSettings.showCadastre, secondaryParcels, onDragMergeLoadedParcels]);
+  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, secondaryParcels, onDragMergeLoadedParcels, playMergeMorphAnimation]);
 
   // Render Secondary (Non-active) Loaded Cadastral Parcels from other KML files
   useEffect(() => {
     if (!secondaryParcelsGroupRef.current) return;
     secondaryParcelsGroupRef.current.clearLayers();
 
-    if (!secondaryParcels || secondaryParcels.length === 0 || mapSettings.showCadastre === false) return;
+    if (!secondaryParcels || secondaryParcels.length === 0) return;
 
     const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
 
@@ -438,7 +811,28 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               }
 
               if (targetParcelId && onDragMergeLoadedParcels) {
-                onDragMergeLoadedParcels(sp.id, targetParcelId);
+                let targetGeom: any = null;
+                let targetLabel = '';
+                if (targetParcelId === 'main') {
+                  targetGeom = mainPolygon;
+                  targetLabel = 'Ana Parsel';
+                } else {
+                  const other = secondaryParcels.find((o) => o.id === targetParcelId);
+                  targetGeom = other ? other.geometry : null;
+                  targetLabel = other ? `${other.cadastralInfo.adaNo}/${other.cadastralInfo.parselNo}` : 'Parsel';
+                }
+
+                const unionGeom = targetGeom ? computeUnionGeometry(sp.geometry, targetGeom) : null;
+                const approxArea = Math.round(turf.area(unionGeom || sp.geometry));
+                const title = `${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo} + ${targetLabel}: ${approxArea.toLocaleString('tr-TR')} m²`;
+
+                try {
+                  subLayer.setStyle({ opacity: 0, fillOpacity: 0 });
+                } catch {}
+
+                playMergeMorphAnimation(sp.geometry, targetGeom || droppedGeo, unionGeom, title, droppedGeo, () => {
+                  onDragMergeLoadedParcels(sp.id, targetParcelId!);
+                });
               } else {
                 // Reset position to original
                 try {
@@ -477,7 +871,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         secondaryParcelsGroupRef.current!.addLayer(marker);
       } catch {}
     });
-  }, [secondaryParcels, onSelectActiveParcel, mapSettings.enableDragMerge, mapSettings.cadModeActive, mapSettings.showCadastre, mainPolygon, onDragMergeLoadedParcels]);
+  }, [secondaryParcels, onSelectActiveParcel, mapSettings.enableDragMerge, mapSettings.cadModeActive, mapSettings.showCadastre, mainPolygon, onDragMergeLoadedParcels, playMergeMorphAnimation]);
 
   // Render Road Lines
   useEffect(() => {
@@ -510,53 +904,93 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     if (!mainPolygon) return;
 
     const edges = getMainPolygonEdges(mainPolygon);
+    const activeWestIdx = westEdgeIndex ?? leftSideEdgeIndex;
+    const activeEastIdx = eastEdgeIndex ?? rightSideEdgeIndex;
+
     edges.forEach((edge) => {
       const isSelected = selectedFrontageEdgeIndices.includes(edge.index);
-      const isSelecting = isSelectingFrontageEdge;
+      const isWestEdge = activeWestIdx !== undefined && activeWestIdx === edge.index;
+      const isEastEdge = activeEastIdx !== undefined && activeEastIdx === edge.index;
+      const isSelecting = isSelectingFrontageEdge || (edgeSelectionMode !== undefined && edgeSelectionMode !== 'none');
 
-      // Only draw if selecting mode is active, or if this edge is selected
-      if (!isSelecting && !isSelected) return;
+      // Only draw if selecting mode is active, or if this edge is selected as road or west/east edge
+      if (!isSelecting && !isSelected && !isWestEdge && !isEastEdge) return;
 
       const latlngs: [number, number][] = [
         [edge.p1[1], edge.p1[0]],
         [edge.p2[1], edge.p2[0]]
       ];
 
+      let edgeColor = '#38bdf8';
+      let edgeWeight = 4;
+      if (isSelected) {
+        edgeColor = '#f59e0b'; // Amber / Gold for Road
+        edgeWeight = 6.5;
+      } else if (isWestEdge) {
+        edgeColor = '#3b82f6'; // Bright Blue for Sol (Batı)
+        edgeWeight = 6.0;
+      } else if (isEastEdge) {
+        edgeColor = '#a855f7'; // Purple for Sağ (Doğu)
+        edgeWeight = 6.0;
+      }
+
       const polyline = L.polyline(latlngs, {
         pane: 'roadPane',
-        color: isSelected ? '#f59e0b' : '#38bdf8',
-        weight: isSelected ? 6.5 : 4,
-        dashArray: isSelected ? undefined : '6, 6',
-        opacity: isSelected ? 1 : 0.85
+        color: edgeColor,
+        weight: edgeWeight,
+        dashArray: isSelected || isWestEdge || isEastEdge ? undefined : '6, 6',
+        opacity: isSelected || isWestEdge || isEastEdge ? 1 : 0.85
       }).addTo(frontageEdgeGroupRef.current!);
 
       if (isSelecting) {
-        polyline.bindTooltip(
-          isSelected
+        let tooltipText = `Tıkla: Kenar #${edge.index + 1} (${edge.lengthM}m)`;
+        let tooltipClass = 'bg-slate-900/90 text-white font-semibold text-[11px] px-2 py-1 rounded-md border border-sky-400 shadow';
+
+        if (edgeSelectionMode === 'left') {
+          tooltipText = isWestEdge
+            ? `Seçili Sol Kenar (Batı): #${edge.index + 1} (${edge.lengthM}m)`
+            : `Tıkla: Sol Kenar (Batı) Olarak Seç (#${edge.index + 1} - ${edge.lengthM}m)`;
+          tooltipClass = 'bg-blue-600 text-white font-bold text-[11px] px-2 py-1 rounded-md border border-blue-300 shadow';
+        } else if (edgeSelectionMode === 'right') {
+          tooltipText = isEastEdge
+            ? `Seçili Sağ Kenar (Doğu): #${edge.index + 1} (${edge.lengthM}m)`
+            : `Tıkla: Sağ Kenar (Doğu) Olarak Seç (#${edge.index + 1} - ${edge.lengthM}m)`;
+          tooltipClass = 'bg-purple-600 text-white font-bold text-[11px] px-2 py-1 rounded-md border border-purple-300 shadow';
+        } else {
+          // Road selection mode
+          tooltipText = isSelected
             ? `Seçili Yol Cephesi: Çıkarmak için tıkla (#${edge.index + 1} - ${edge.lengthM}m)`
-            : `Tıkla: Çoklu Yol Cephesine Ekle (#${edge.index + 1} - ${edge.lengthM}m)`,
-          {
-            sticky: true,
-            direction: 'top',
-            className: isSelected
-              ? 'bg-amber-500 text-slate-950 font-bold text-[11px] px-2 py-1 rounded-md border border-amber-300 shadow'
-              : 'bg-slate-900/90 text-white font-semibold text-[11px] px-2 py-1 rounded-md border border-sky-400 shadow'
-          }
-        );
+            : `Tıkla: Yol Cephesine Ekle (#${edge.index + 1} - ${edge.lengthM}m)`;
+          tooltipClass = isSelected
+            ? 'bg-amber-500 text-slate-950 font-bold text-[11px] px-2 py-1 rounded-md border border-amber-300 shadow'
+            : 'bg-slate-900/90 text-white font-semibold text-[11px] px-2 py-1 rounded-md border border-sky-400 shadow';
+        }
+
+        polyline.bindTooltip(tooltipText, {
+          sticky: true,
+          direction: 'top',
+          className: tooltipClass
+        });
 
         polyline.on('mouseover', () => {
-          polyline.setStyle({ weight: 7.5, color: isSelected ? '#d97706' : '#f59e0b', opacity: 1 });
+          polyline.setStyle({
+            weight: 7.5,
+            color: edgeSelectionMode === 'left' ? '#60a5fa' : edgeSelectionMode === 'right' ? '#c084fc' : '#f59e0b',
+            opacity: 1
+          });
         });
         polyline.on('mouseout', () => {
           polyline.setStyle({
-            weight: isSelected ? 6.5 : 4,
-            color: isSelected ? '#f59e0b' : '#38bdf8',
-            opacity: isSelected ? 1 : 0.85
+            weight: edgeWeight,
+            color: edgeColor,
+            opacity: 1
           });
         });
         polyline.on('click', (e) => {
           L.DomEvent.stopPropagation(e);
-          if (onToggleFrontageEdge) {
+          if (onSelectEdgeForMode && edgeSelectionMode !== 'none') {
+            onSelectEdgeForMode(edgeSelectionMode, edge.index);
+          } else if (onToggleFrontageEdge) {
             onToggleFrontageEdge(edge.index);
           }
         });
@@ -566,9 +1000,21 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           direction: 'center',
           className: 'bg-amber-500 text-slate-950 font-bold text-[10px] px-2 py-0.5 rounded shadow-lg border border-amber-300'
         });
+      } else if (isWestEdge) {
+        polyline.bindTooltip(`📐 Sol Kenar (Batı) #${edge.index + 1} (${edge.lengthM}m)`, {
+          permanent: true,
+          direction: 'center',
+          className: 'bg-blue-600 text-white font-bold text-[10px] px-2 py-0.5 rounded shadow-lg border border-blue-400'
+        });
+      } else if (isEastEdge) {
+        polyline.bindTooltip(`📐 Sağ Kenar (Doğu) #${edge.index + 1} (${edge.lengthM}m)`, {
+          permanent: true,
+          direction: 'center',
+          className: 'bg-purple-600 text-white font-bold text-[10px] px-2 py-0.5 rounded shadow-lg border border-purple-400'
+        });
       }
     });
-  }, [mainPolygon, isSelectingFrontageEdge, selectedFrontageEdgeIndices, onToggleFrontageEdge]);
+  }, [mainPolygon, isSelectingFrontageEdge, edgeSelectionMode, selectedFrontageEdgeIndices, westEdgeIndex, eastEdgeIndex, leftSideEdgeIndex, rightSideEdgeIndex, onToggleFrontageEdge, onSelectEdgeForMode]);
 
   // Render Axis Line for Double Row
   useEffect(() => {
@@ -637,6 +1083,24 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       const labelParts: string[] = [];
       if (mapSettings.showNames) labelParts.push(`<b>${p.name}</b>`);
       if (mapSettings.showAreas) labelParts.push(`${p.areaM2.toFixed(1)} m²`);
+      if (p.frontageM > 0 || (p.rearWidthM !== undefined && p.rearWidthM > 0)) {
+        labelParts.push(
+          `<span style="font-size: 10px; opacity: 0.95;">Yol: ${p.frontageM.toFixed(1)}m | Bitiş: ${(p.rearWidthM || 0).toFixed(1)}m</span>`
+        );
+      }
+      if (p.topography) {
+        labelParts.push(
+          `<span style="font-size: 9.5px; color: #6ee7b7; font-weight: 600;">Eğim: %${p.topography.avgSlopePercent} (${p.topography.aspect}) | ΔZ: ${p.topography.elevationDiffM}m</span>`
+        );
+      }
+      if (p.soilClassification) {
+        labelParts.push(
+          `<span style="font-size: 9px; color: #fcd34d; font-weight: 600;">🏗️ Zemin: ${p.soilClassification.soilClass} (qa: ${p.soilClassification.bearingCapacityKgCm2} kg)</span>`
+        );
+      }
+      if (!p.isValid && p.validationReasons.length > 0) {
+        labelParts.push(`<span style="color: #fca5a5; font-size: 9px; font-weight: bold;">⚠️ Min 10m / İmar Uyarısı</span>`);
+      }
 
       if (labelParts.length > 0) {
         geoJsonLayer.bindTooltip(labelParts.join('<br/>'), {
@@ -702,7 +1166,18 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               }
 
               if (targetIdx !== -1) {
-                onDragMerge(idx, targetIdx);
+                const targetParcel = parcels[targetIdx];
+                const unionGeom = computeUnionGeometry(p.feature, targetParcel.feature);
+                const approxArea = Math.round(turf.area(unionGeom || p.feature));
+                const title = `Parsel #${idx + 1} + #${targetIdx + 1}: ${approxArea.toLocaleString('tr-TR')} m²`;
+
+                try {
+                  subLayer.setStyle({ opacity: 0, fillOpacity: 0 });
+                } catch {}
+
+                playMergeMorphAnimation(p.feature, targetParcel.feature, unionGeom, title, droppedGeo, () => {
+                  onDragMerge(idx, targetIdx);
+                });
               } else {
                 try {
                   const tempGroup = L.geoJSON(p.feature);
@@ -749,7 +1224,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             let angleDeg = bearing - 90;
             // CAD standard readability: keep text readable left-to-right (no upside down text)
             while (angleDeg > 90) angleDeg -= 180;
-            while (angleDeg < -90) angleDeg += 180;
+            while (angleDeg < -90) angleDeg -= 180;
 
             // Check if this edge is adjacent to a road boundary line
             let isRoadFrontageEdge = false;
@@ -787,7 +1262,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     selectedParcelIds,
     onParcelSelectToggle,
     onDragMerge,
-    onParcelGeometryUpdated
+    onParcelGeometryUpdated,
+    playMergeMorphAnimation
   ]);
 
   // Render Balastro & İfraz/Tevhid Corner & Break Daire Noktaları (Circle Markers)
@@ -1000,12 +1476,18 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     });
   }, [mainPolygon, parcels, secondaryParcels, mapSettings.showCadastre]);
 
-  const handleToggleDrawPolygon = () => {
+  const handleToggleDrawPolygon = (forceEnable?: boolean) => {
     const map = mapRef.current;
     if (!map) return;
-    if (activeDrawTool === 'polygon') {
+    const shouldEnable = forceEnable !== undefined ? forceEnable : activeDrawTool !== 'polygon';
+
+    if (!shouldEnable) {
       map.pm.disableDraw();
       setActiveDrawTool(null);
+      setDrawingLiveMetrics(null);
+      if (drawMeasurementsGroupRef.current) {
+        drawMeasurementsGroupRef.current.clearLayers();
+      }
     } else {
       if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
       if (mapSettings.cadModeActive && onToggleCadMode) onToggleCadMode(false);
@@ -1406,8 +1888,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           {[
             {
               key: 'showCadastre',
-              label: 'Balastro',
-              title: 'Balastro Köşe & İfraz/Tevhit Kırık Daire Noktalarını Aç / Kapat',
+              label: 'Balastro (Köşe)',
+              title: 'Parsel Köşe Numaralarını ve Kırık Daire Noktalarını Aç / Kapat (Parsel Kapanmaz)',
               icon: Landmark,
               activeColor: 'text-cyan-400'
             },
@@ -1507,39 +1989,100 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       </div>
       )}
 
-      {/* Aktif Çizim / Silme Bilgilendirme Rozeti */}
+      {/* Aktif Çizim / Silme Bilgilendirme ve Dinamik Ölçü HUD Rozeti */}
       {activeDrawTool && (
-        <div className="absolute top-16 right-52 z-[990] h-8 px-3.5 bg-slate-900/90 backdrop-blur-xl border border-white/20 text-white text-xs font-medium rounded-full flex items-center gap-2 shadow-lg animate-in fade-in slide-in-from-top-1">
-          <div
-            className={`w-2 h-2 rounded-full animate-pulse ${
-              activeDrawTool === 'polygon'
-                ? 'bg-blue-400'
-                : activeDrawTool === 'line'
-                ? 'bg-amber-400'
-                : 'bg-rose-400'
-            }`}
-          />
-          <span>
-            {activeDrawTool === 'polygon' &&
-              'Parsel Çizimi Aktif: Haritada köşeleri belirleyin, bitirmek için ilk noktaya veya çift tıklayın.'}
-            {activeDrawTool === 'line' &&
-              'İmar Yolu Çizimi Aktif: Haritada güzergahı tıklayın, bitirmek için çift tıklayın.'}
-            {activeDrawTool === 'delete' &&
-              'Silme Modu Aktif: Silmek istediğiniz parsel veya çizgiye haritada tıklayın.'}
-          </span>
-          <button
-            onClick={() => {
-              const map = mapRef.current;
-              if (map) {
-                map.pm.disableDraw();
-                if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
-              }
-              setActiveDrawTool(null);
-            }}
-            className="ml-1 text-slate-400 hover:text-white text-[11px] underline"
-          >
-            İptal
-          </button>
+        <div className="absolute top-16 right-52 z-[990] flex flex-col items-end gap-2 animate-in fade-in slide-in-from-top-1 pointer-events-none">
+          {/* Ana Bilgi Rozeti */}
+          <div className="h-8 px-3.5 bg-slate-900/90 backdrop-blur-xl border border-white/20 text-white text-xs font-medium rounded-full flex items-center gap-2 shadow-lg pointer-events-auto">
+            <div
+              className={`w-2 h-2 rounded-full animate-pulse ${
+                activeDrawTool === 'polygon'
+                  ? 'bg-cyan-400 shadow-[0_0_8px_rgba(34,211,238,0.8)]'
+                  : activeDrawTool === 'line'
+                  ? 'bg-amber-400'
+                  : 'bg-rose-400'
+              }`}
+            />
+            <span>
+              {activeDrawTool === 'polygon' &&
+                'Elle Parsel Çizimi Aktif: Köşeleri tıklayın, bitirmek için ilk noktaya veya çift tıklayın.'}
+              {activeDrawTool === 'line' &&
+                'İmar Yolu Çizimi Aktif: Haritada güzergahı tıklayın, bitirmek için çift tıklayın.'}
+              {activeDrawTool === 'delete' &&
+                'Silme Modu Aktif: Silmek istediğiniz parsel veya çizgiye haritada tıklayın.'}
+            </span>
+            <button
+              onClick={() => {
+                const map = mapRef.current;
+                if (map) {
+                  map.pm.disableDraw();
+                  if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
+                }
+                setActiveDrawTool(null);
+                setDrawingLiveMetrics(null);
+                if (drawMeasurementsGroupRef.current) {
+                  drawMeasurementsGroupRef.current.clearLayers();
+                }
+              }}
+              className="ml-1 text-slate-400 hover:text-white text-[11px] underline"
+            >
+              İptal
+            </button>
+          </div>
+
+          {/* Dinamik Alan ve Mesafe Canlı Gösterge Kartı (Elle Parsel Çizilirken) */}
+          {activeDrawTool === 'polygon' && drawingLiveMetrics && (
+            <div className="apple-glass rounded-2xl p-2.5 px-3.5 border border-cyan-500/40 shadow-2xl text-white flex items-center gap-3 backdrop-blur-2xl pointer-events-auto animate-in zoom-in-95 duration-150">
+              <div className="flex items-center gap-1.5 text-cyan-400 border-r border-white/10 pr-3">
+                <span className="w-2 h-2 rounded-full bg-cyan-400 animate-ping shrink-0" />
+                <span className="text-[10px] uppercase font-bold tracking-wider">Canlı Ölçüm</span>
+              </div>
+
+              {/* Anlık Kenar Mesafesi */}
+              <div className="flex flex-col">
+                <span className="text-[9px] text-slate-400 font-semibold uppercase">Son Kenar Mesafesi</span>
+                <span className="font-mono font-bold text-amber-300 text-xs">
+                  {drawingLiveMetrics.currentEdgeLengthM > 0
+                    ? `${drawingLiveMetrics.currentEdgeLengthM.toFixed(1)} m`
+                    : 'Köşe Bekleniyor...'}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-white/10" />
+
+              {/* Toplam Çevre */}
+              <div className="flex flex-col">
+                <span className="text-[9px] text-slate-400 font-semibold uppercase">Toplam Çevre</span>
+                <span className="font-mono font-bold text-slate-200 text-xs">
+                  {drawingLiveMetrics.totalPerimeterM > 0
+                    ? `${drawingLiveMetrics.totalPerimeterM.toFixed(1)} m`
+                    : '0.0 m'}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-white/10" />
+
+              {/* Dinamik Parsel Alanı */}
+              <div className="flex flex-col">
+                <span className="text-[9px] text-slate-400 font-semibold uppercase">Hesaplanan Parsel Alanı</span>
+                <span className="font-mono font-extrabold text-emerald-400 text-sm">
+                  {drawingLiveMetrics.approxAreaM2 > 0
+                    ? `${drawingLiveMetrics.approxAreaM2.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} m²`
+                    : 'Min 3 köşe'}
+                </span>
+              </div>
+
+              <div className="h-6 w-px bg-white/10" />
+
+              {/* Köşe Adedi */}
+              <div className="flex flex-col items-center">
+                <span className="text-[9px] text-slate-400 font-semibold uppercase">Köşe</span>
+                <span className="font-mono font-bold text-blue-300 text-xs">
+                  {drawingLiveMetrics.vertexCount}
+                </span>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

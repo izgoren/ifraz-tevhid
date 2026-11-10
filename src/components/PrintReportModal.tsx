@@ -559,6 +559,73 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
             )}
           </div>
 
+          {/* Topografik Eğim ve İmar Geçerlilik Analiz Tablosu */}
+          {parcels.length > 0 && (
+            <div className="mt-3 border border-slate-300 rounded-lg p-2.5 bg-slate-50/50">
+              <div className="flex items-center justify-between border-b border-slate-300 pb-1 mb-1.5">
+                <span className="text-[10px] font-black uppercase text-slate-800 tracking-wider">
+                  Topografik Eğim ve İmar Geçerlilik Cetveli (Planlı Alanlar İmar Yönetmeliği m.14/20)
+                </span>
+                <span className="text-[9px] font-mono font-bold text-emerald-800">
+                  {parcels.filter(p => p.isValid).length}/{parcels.length} Parsel Mevzuata Uygun
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-[9px] font-mono border-collapse">
+                  <thead>
+                    <tr className="border-b border-slate-300 text-slate-700 bg-slate-100/80">
+                      <th className="py-1 px-1.5">No</th>
+                      <th className="py-1 px-1.5">Alan</th>
+                      <th className="py-1 px-1.5">Yol Cephesi</th>
+                      <th className="py-1 px-1.5">Bitiş Sınırı</th>
+                      <th className="py-1 px-1.5">Kotlar (Zmin-Zmax)</th>
+                      <th className="py-1 px-1.5">ΔZ (Kot Farkı)</th>
+                      <th className="py-1 px-1.5">Eğim (%) / (°)</th>
+                      <th className="py-1 px-1.5">Bakı</th>
+                      <th className="py-1 px-1.5">İmar Eğim Sınıfı</th>
+                      <th className="py-1 px-1.5">Durum</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 text-slate-800">
+                    {parcels.map((p, idx) => {
+                      const topo = p.topography;
+                      return (
+                        <tr key={p.id}>
+                          <td className="py-1 px-1.5 font-bold font-sans">{idx + 1} ({p.name})</td>
+                          <td className="py-1 px-1.5 font-bold">{p.areaM2.toFixed(1)} m²</td>
+                          <td className="py-1 px-1.5">
+                            <span className={p.frontageM >= 10 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold'}>
+                              {p.frontageM.toFixed(1)}m
+                            </span>
+                          </td>
+                          <td className="py-1 px-1.5">
+                            <span className={(p.rearWidthM || 0) >= 10 ? 'text-emerald-700 font-bold' : 'text-rose-700 font-bold'}>
+                              {(p.rearWidthM || 0).toFixed(1)}m
+                            </span>
+                          </td>
+                          <td className="py-1 px-1.5">{topo ? `${topo.minElevationM}m - ${topo.maxElevationM}m` : '-'}</td>
+                          <td className="py-1 px-1.5 font-bold text-blue-800">{topo ? `${topo.elevationDiffM} m` : '-'}</td>
+                          <td className="py-1 px-1.5 font-bold">
+                            {topo ? `%${topo.avgSlopePercent} (${topo.avgSlopeDegrees}°)` : '-'}
+                          </td>
+                          <td className="py-1 px-1.5 font-sans">{topo?.aspect || '-'}</td>
+                          <td className="py-1 px-1.5 font-sans">{topo?.category || '-'}</td>
+                          <td className="py-1 px-1.5 font-sans font-bold">
+                            {p.isValid ? (
+                              <span className="text-emerald-700">✓ Uygun</span>
+                            ) : (
+                              <span className="text-rose-700">⚠️ Yetersiz</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
           {/* Alt Özet Şeridi */}
           <div className="flex items-center justify-between text-[11px] text-slate-600 font-mono mt-3 pt-2 border-t border-slate-200">
             <span>İzgören Harita Mühendislik ve Müşavirlik Bürosu</span>

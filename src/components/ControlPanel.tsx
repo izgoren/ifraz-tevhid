@@ -23,7 +23,20 @@ import {
   Columns,
   Smartphone,
   CheckCircle2,
-  Sparkles
+  Sparkles,
+  Ruler,
+  Lock,
+  Unlock,
+  Mountain,
+  TrendingUp,
+  BarChart3,
+  AlertTriangle,
+  Globe,
+  PenTool,
+  Shapes,
+  Type,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -52,24 +65,48 @@ interface ControlPanelProps {
   onUpdateParcelAttributes: (parcelId: string, attrs: any) => void;
   statusMessage?: string;
   onOpenPrintModal?: () => void;
+  onOpenSoilAnalysis?: (tab?: 'soil' | 'slope') => void;
   onRecalculate?: () => void;
   roadLines?: Feature<LineString>[];
   mainPolygonEdges?: ParcelEdge[];
   selectedFrontageEdgeIndices?: number[];
   isSelectingFrontageEdge?: boolean;
+  edgeSelectionMode?: 'none' | 'road' | 'left' | 'right';
+  onSetEdgeSelectionMode?: (mode: 'none' | 'road' | 'left' | 'right') => void;
   onToggleSelectFrontageEdge?: () => void;
   onToggleFrontageEdge?: (edgeIndex: number) => void;
   onClearFrontage?: () => void;
   onSaveSettings?: () => void;
   onResetSettings?: () => void;
   isSettingsSaved?: boolean;
+  isDrawingPolygon?: boolean;
+  onToggleDrawPolygon?: () => void;
 }
+
+const BASEMAP_OPTIONS = [
+  {
+    id: 'googleHybrid',
+    label: 'Hibrit Uydu',
+    sublabel: 'Google Uydu + Yol & İsimler'
+  },
+  {
+    id: 'googleSatellite',
+    label: 'Saf Uydu',
+    sublabel: 'Yüksek Çözünürlüklü Hava Fotoğrafı'
+  },
+  {
+    id: 'osm',
+    label: 'Standart Sokak',
+    sublabel: 'Vektörel İmar & Sokak Haritası'
+  }
+] as const;
 
 export const ControlPanel: React.FC<ControlPanelProps> = ({
   config,
   onChangeConfig,
   mapSettings,
   onChangeMapSettings,
+  parcels = [],
   selectedParcelIds,
   canUndo,
   canRedo,
@@ -82,19 +119,25 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onExportCSV,
   onReset,
   onOpenPrintModal,
+  onOpenSoilAnalysis,
   onRecalculate,
   mainPolygonEdges = [],
   selectedFrontageEdgeIndices = [],
   isSelectingFrontageEdge = false,
+  edgeSelectionMode = 'none',
+  onSetEdgeSelectionMode,
   onToggleSelectFrontageEdge,
   onClearFrontage,
   onSaveSettings,
   onResetSettings,
-  isSettingsSaved = false
+  isSettingsSaved = false,
+  isDrawingPolygon = false,
+  onToggleDrawPolygon
 }) => {
   const [panelOpen, setPanelOpen] = useState(true);
   const [showSaveAsMenu, setShowSaveAsMenu] = useState(false);
   const [showSettingsMenu, setShowSettingsMenu] = useState(false);
+  const [showBaseMapMenu, setShowBaseMapMenu] = useState(false);
   const [showPiecePopover, setShowPiecePopover] = useState(false);
   const [showAnglePopover, setShowAnglePopover] = useState(false);
   const [showDoubleRowPopover, setShowDoubleRowPopover] = useState(false);
@@ -113,6 +156,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
   // Multi-edge road frontage calculation
   const multiFrontage = calculateMultiEdgeFrontage(mainPolygonEdges, selectedFrontageEdgeIndices);
+
+  const currentBaseMapOption = BASEMAP_OPTIONS.find((opt) => opt.id === mapSettings.tileProvider) || BASEMAP_OPTIONS[0];
 
   return (
     <>
@@ -257,10 +302,78 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           </button>
         )}
 
+        {/* Altlık Harita Menüsü Butonu (Ayarlar'ın Yanında) */}
+        <div className="relative">
+          <button
+            onClick={() => {
+              setShowBaseMapMenu((prev) => !prev);
+              setShowSettingsMenu(false);
+            }}
+            className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
+              showBaseMapMenu
+                ? 'bg-blue-500 text-white font-bold border-blue-400 shadow-sm'
+                : 'bg-white/10 hover:bg-white/15 text-slate-200 hover:text-white border-white/10'
+            }`}
+            title={`Altlık Harita: ${currentBaseMapOption.label} (Değiştirmek için tıklayın)`}
+          >
+            <Layers className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+            <span>{currentBaseMapOption.label}</span>
+          </button>
+
+          {/* Altlık Harita Popover Menüsü */}
+          {showBaseMapMenu && (
+            <div className="absolute top-full right-0 mt-2 z-[1100] w-64 apple-glass rounded-2xl p-2.5 shadow-2xl border border-white/15 text-slate-100 space-y-1 animate-in fade-in slide-in-from-top-1 duration-150">
+              <div className="flex items-center justify-between px-2 py-1 border-b border-white/[0.08] text-xs font-semibold text-slate-300">
+                <span className="flex items-center gap-1.5">
+                  <Layers className="w-3.5 h-3.5 text-blue-400" />
+                  <span>Altlık Harita</span>
+                </span>
+                <button
+                  onClick={() => setShowBaseMapMenu(false)}
+                  className="w-5 h-5 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+
+              <div className="space-y-1 pt-1">
+                {BASEMAP_OPTIONS.map((opt) => {
+                  const isSelected = mapSettings.tileProvider === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      onClick={() => {
+                        handleSettingChange('tileProvider', opt.id as any);
+                        setShowBaseMapMenu(false);
+                      }}
+                      className={`w-full py-2 px-2.5 rounded-xl text-left transition flex items-center justify-between text-xs ${
+                        isSelected
+                          ? 'bg-blue-500/25 text-white font-bold border border-blue-400/40 shadow-sm'
+                          : 'text-slate-300 hover:text-white hover:bg-white/10 border border-transparent'
+                      }`}
+                    >
+                      <div className="flex flex-col">
+                        <span className="font-medium text-[12px]">{opt.label}</span>
+                        <span className="text-[10px] text-slate-400">{opt.sublabel}</span>
+                      </div>
+                      {isSelected && (
+                        <span className="w-2 h-2 rounded-full bg-blue-400 shadow-[0_0_6px_rgba(59,130,246,0.8)]" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Ayarlar Menüsü Butonu (Güncelleme gelince yeşil olur) */}
         <div className="relative">
           <button
-            onClick={() => setShowSettingsMenu((prev) => !prev)}
+            onClick={() => {
+              setShowSettingsMenu((prev) => !prev);
+              setShowBaseMapMenu(false);
+            }}
             className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
               hasUpdate
                 ? 'bg-emerald-600 hover:bg-emerald-500 text-white font-bold border-emerald-400 shadow-[0_0_12px_rgba(16,185,129,0.7)] animate-pulse'
@@ -336,6 +449,94 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   onChange={(e) => handleSettingChange('uiOpacity', parseInt(e.target.value) || 78)}
                   className="w-full h-1 bg-white/10 rounded-full accent-blue-500 cursor-pointer"
                 />
+              </div>
+
+              {/* Buton ve Yazı Boyutu (Arayüz Büyütme) */}
+              <div className="space-y-2 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                    <Type className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Yazı & Buton Büyütme</span>
+                  </div>
+                  <span className="text-[11px] font-mono font-bold text-cyan-300">
+                    %{mapSettings.uiScale ?? 100}
+                  </span>
+                </div>
+
+                {/* Hızlı Büyütme Butonları: Standart (%100), Büyük (%112), Ekstra Büyük (%125) */}
+                <div className="grid grid-cols-3 gap-1 bg-white/[0.04] p-1 rounded-xl border border-white/[0.06]">
+                  <button
+                    type="button"
+                    onClick={() => handleSettingChange('uiScale', 100)}
+                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
+                      (mapSettings.uiScale ?? 100) === 100
+                        ? 'bg-cyan-500 text-white font-bold shadow-sm'
+                        : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span className="text-[11px] leading-tight font-medium">Standart</span>
+                    <span className="text-[9px] opacity-80 font-mono">%100</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSettingChange('uiScale', 112)}
+                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
+                      (mapSettings.uiScale ?? 100) === 112
+                        ? 'bg-cyan-500 text-white font-bold shadow-sm'
+                        : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span className="text-[11px] leading-tight font-medium">Büyük</span>
+                    <span className="text-[9px] opacity-80 font-mono">%112</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSettingChange('uiScale', 125)}
+                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
+                      (mapSettings.uiScale ?? 100) === 125
+                        ? 'bg-cyan-500 text-white font-bold shadow-sm'
+                        : 'text-slate-400 hover:text-white hover:bg-white/[0.04]'
+                    }`}
+                  >
+                    <span className="text-[11px] leading-tight font-medium">Çok Büyük</span>
+                    <span className="text-[9px] opacity-80 font-mono">%125</span>
+                  </button>
+                </div>
+
+                {/* İnce Ayar Kademeli Butonlar ve Slider */}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => handleSettingChange('uiScale', Math.max(90, (mapSettings.uiScale ?? 100) - 5))}
+                    disabled={(mapSettings.uiScale ?? 100) <= 90}
+                    className="w-7 h-7 rounded-lg bg-white/[0.06] hover:bg-white/10 disabled:opacity-30 text-slate-300 hover:text-white flex items-center justify-center transition shrink-0"
+                    title="Yazı ve butonları küçült (-%5)"
+                  >
+                    <ZoomOut className="w-3.5 h-3.5" />
+                  </button>
+
+                  <input
+                    type="range"
+                    min={90}
+                    max={130}
+                    step={2}
+                    value={mapSettings.uiScale ?? 100}
+                    onChange={(e) => handleSettingChange('uiScale', parseInt(e.target.value) || 100)}
+                    className="flex-1 h-1 bg-white/10 rounded-full accent-cyan-400 cursor-pointer"
+                  />
+
+                  <button
+                    type="button"
+                    onClick={() => handleSettingChange('uiScale', Math.min(130, (mapSettings.uiScale ?? 100) + 5))}
+                    disabled={(mapSettings.uiScale ?? 100) >= 130}
+                    className="w-7 h-7 rounded-lg bg-white/[0.06] hover:bg-white/10 disabled:opacity-30 text-slate-300 hover:text-white flex items-center justify-center transition shrink-0"
+                    title="Yazı ve butonları büyült (+%5)"
+                  >
+                    <ZoomIn className="w-3.5 h-3.5" />
+                  </button>
+                </div>
               </div>
 
               {/* Uygulama Güncellemesi (Güncelleme Gelince Yeşil Olur) */}
@@ -485,9 +686,34 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
           {/* Grup 1: Hesaplama & Parametreler */}
           <div className="space-y-1">
-            <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Parametreler
+            <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
+              <span>Parsel & Parametreler</span>
             </div>
+
+            {/* Elle Parsel Alanı Çiz Butonu */}
+            {onToggleDrawPolygon && (
+              <button
+                onClick={onToggleDrawPolygon}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 ${
+                  isDrawingPolygon
+                    ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold shadow-lg shadow-blue-500/30 border border-cyan-300'
+                    : 'bg-blue-500/15 hover:bg-blue-500/25 text-blue-300 hover:text-white border border-blue-500/30'
+                }`}
+                title="Harita üzerinde köşe noktalarını tıklayarak elle serbest parsel alanı çizin. Çizim esnasında dinamik kenar mesafeleri ve toplam alan anlık gösterilir."
+              >
+                <div className="flex items-center gap-1.5">
+                  <PenTool className={`w-3.5 h-3.5 stroke-[2] ${isDrawingPolygon ? 'text-white animate-spin' : 'text-cyan-400'}`} />
+                  <span className="text-[11px]">Elle Parsel Çiz</span>
+                </div>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  isDrawingPolygon
+                    ? 'bg-blue-900/90 text-cyan-200 border border-cyan-400/50 animate-pulse'
+                    : 'bg-blue-400/20 text-blue-200'
+                }`}>
+                  {isDrawingPolygon ? 'ÇİZİLİYOR' : 'ALAN ÇİZ'}
+                </span>
+              </button>
+            )}
 
             {/* Parça Sayısı Butonu & Popover */}
             <div className="relative">
@@ -714,6 +940,39 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 <div className="text-[10px] text-slate-400">
                   Dik Açı: <span className="text-amber-300 font-mono font-bold">{multiFrontage.perpAngle}°</span>
                 </div>
+              </div>
+            )}
+
+            {/* Zemin Türü Tahmini & Jeoteknik Analiz Butonu */}
+            {onOpenSoilAnalysis && (
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  onClick={() => onOpenSoilAnalysis('soil')}
+                  className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 hover:border-amber-400 shadow-sm"
+                  title="TBDY 2018 Zemin Sınıfları (ZA-ZF), Vs30, Taşıma Gücü ve Jeoteknik Raporu"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <Mountain className="w-3.5 h-3.5 text-amber-400 stroke-[2] shrink-0" />
+                    <span className="text-[11px] font-medium text-slate-100 truncate">Zemin (TBDY)</span>
+                  </div>
+                  <span className="text-[9px] px-1 py-0.5 rounded font-mono font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30 shrink-0">
+                    ZA-ZF
+                  </span>
+                </button>
+
+                <button
+                  onClick={() => onOpenSoilAnalysis('slope')}
+                  className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 border border-emerald-500/30 hover:border-emerald-400 shadow-sm"
+                  title="Topoğrafik Eğim, Kot Farkı, Açığa Çıkan Katlar ve Mekânsal Yerleşime Uygunluk Raporu"
+                >
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400 stroke-[2] shrink-0" />
+                    <span className="text-[11px] font-medium text-slate-100 truncate">Eğim Raporu</span>
+                  </div>
+                  <span className="text-[9px] px-1 py-0.5 rounded font-mono font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 shrink-0">
+                    UÖ/ÖA
+                  </span>
+                </button>
               </div>
             )}
           </div>

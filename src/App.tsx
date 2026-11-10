@@ -4,9 +4,12 @@ import * as turf from '@turf/turf';
 import { MapContainer } from './components/MapContainer';
 import { ControlPanel } from './components/ControlPanel';
 import { PrintReportModal } from './components/PrintReportModal';
-import { DraggableBaseMapControl } from './components/DraggableBaseMapControl';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { CadastralAttributeDrawer } from './components/CadastralAttributeDrawer';
+import { SoilAnalysisModal } from './components/SoilAnalysisModal';
+import { NewDrawnParcelModal } from './components/NewDrawnParcelModal';
+import { estimateSoilClassification, getSoilClassDetails } from './utils/soilEstimation';
+import { calculateParcelTopography } from './utils/topographicSlope';
 import { Info } from 'lucide-react';
 import {
   GeneratedParcel,
@@ -46,7 +49,9 @@ const DEFAULT_CONFIG: SubdivisionConfig = {
   leftAngle: 0,
   rightAngle: 0,
   checkMinFrontage: true,
-  minFrontageVal: 12,
+  minFrontageVal: 10,
+  checkMinRearWidth: true,
+  minRearWidthVal: 10,
   checkMaxDepth: false,
   maxDepthVal: 40,
   checkMinArea: true,
@@ -60,7 +65,17 @@ const DEFAULT_CONFIG: SubdivisionConfig = {
   roadSnapToleranceM: 20,
   autoPerpendicularToRoad: true,
   showRoadFrontageHighlight: true,
-  selectedFrontageEdgeIndices: []
+  selectedFrontageEdgeIndices: [],
+  subdivisionMethod: 'equalArea',
+  frontageDistanceM: 15,
+  isFixedFrontage: false,
+  selectedFrontageEdgeIndex: 0,
+  westEdgeIndex: undefined,
+  eastEdgeIndex: undefined,
+  leftSideEdgeIndex: undefined,
+  rightSideEdgeIndex: undefined,
+  parallelReferenceMode: 'average',
+  isNaturalContour: true
 };
 
 const DEFAULT_MAP_SETTINGS: MapSettings = {
@@ -76,6 +91,7 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   cadActiveTool: 'vertex',
   theme: 'dark',
   uiOpacity: 78,
+  uiScale: 100,
   parcelFillOpacity: 45
 };
 
@@ -121,6 +137,11 @@ export default function App() {
   const [activeParcelId, setActiveParcelId] = useState<string | null>(null);
   const [isAttributeDrawerOpen, setIsAttributeDrawerOpen] = useState<boolean>(false);
 
+  // Soil Analysis Modal State
+  const [isSoilModalOpen, setIsSoilModalOpen] = useState<boolean>(false);
+  const [soilModalParcelId, setSoilModalParcelId] = useState<string | null>(null);
+  const [soilModalInitialTab, setSoilModalInitialTab] = useState<'soil' | 'slope'>('soil');
+
   // All parcels across all loaded KML files
   const allLoadedParcels = useMemo(() => {
     return loadedFiles.flatMap((f) => f.parcels);
@@ -133,7 +154,15 @@ export default function App() {
 
   // Multi-edge Road Frontage Selection States ("Çoklu Kırık")
   const [isSelectingFrontageEdge, setIsSelectingFrontageEdge] = useState<boolean>(false);
+  const [edgeSelectionMode, setEdgeSelectionMode] = useState<'none' | 'road' | 'left' | 'right'>('none');
   const [selectedFrontageEdgeIndices, setSelectedFrontageEdgeIndices] = useState<number[]>([]);
+
+  // Active Map Drawing Tool (polygon/line/delete)
+  const [activeDrawTool, setActiveDrawTool] = useState<'polygon' | 'line' | 'delete' | null>(null);
+
+  // Pending Drawn Polygon for Naming & Additional Parcel Placement
+  const [pendingDrawnPolygon, setPendingDrawnPolygon] = useState<ParcelGeometry | null>(null);
+  const [isDrawnParcelModalOpen, setIsDrawnParcelModalOpen] = useState<boolean>(false);
 
   // Derived edges of the main cadastral parcel
   const mainPolygonEdges = useMemo(() => getMainPolygonEdges(mainPolygon), [mainPolygon]);
@@ -331,8 +360,11 @@ export default function App() {
           if (p.id === parcelId) {
             const updated = { ...p, ...updatedFields };
             if (updatedFields.areaM2 !== undefined && updatedFields.areaM2 !== p.areaM2) {
-              const { isValid, frontageM, depthM, reasons } = validateParcel(updated.feature, updated.areaM2, config, roadLines);
+              const { isValid, frontageM, depthM, rearWidthM, reasons } = validateParcel(updated.feature, updated.areaM2, config, roadLines);
               updated.isValid = isValid;
+              updated.frontageM = frontageM;
+              updated.rearWidthM = rearWidthM;
+              updated.depthM = depthM;
               updated.validationReasons = reasons;
             }
             return updated;
@@ -352,7 +384,7 @@ export default function App() {
       isCadDirtyRef.current = true;
 
       const newAreaM2 = Math.round(turf.area(updatedFeature) * 10) / 10;
-      const { isValid, frontageM, depthM, reasons } = validateParcel(
+      const { isValid, frontageM, depthM, rearWidthM, reasons } = validateParcel(
         updatedFeature,
         newAreaM2,
         config,
@@ -367,6 +399,7 @@ export default function App() {
               feature: updatedFeature,
               areaM2: newAreaM2,
               frontageM,
+              rearWidthM,
               depthM,
               isValid,
               validationReasons: reasons,
@@ -470,8 +503,60 @@ export default function App() {
   const handleClearFrontage = useCallback(() => {
     setSelectedFrontageEdgeIndices([]);
     setIsSelectingFrontageEdge(false);
+    setEdgeSelectionMode('none');
     setStatusMessage('Yol cephesi seçimi sıfırlandı.');
   }, []);
+
+  // Map Edge Selection Handler for Road, Left (West), and Right (East)
+  const handleSelectEdgeForMode = useCallback(
+    (mode: 'road' | 'left' | 'right', edgeIndex: number) => {
+      if (mode === 'road') {
+        handleToggleFrontageEdge(edgeIndex);
+      } else if (mode === 'left') {
+        pushUndoState(`Sol Kenar (Batı) Kenar #${edgeIndex + 1} Olarak Seçildi`);
+        const updatedConfig = {
+          ...config,
+          leftSideEdgeIndex: edgeIndex,
+          westEdgeIndex: edgeIndex,
+          subdivisionMethod: 'trapezoidFrontage' as const
+        };
+        setConfig(updatedConfig);
+        if (mainPolygon) {
+          try {
+            const generated = runSubdivisionProcess(mainPolygon, updatedConfig, roadLines);
+            setParcels(generated);
+            setSelectedParcelIds([]);
+            isCadDirtyRef.current = false;
+          } catch (e: any) {
+            console.error('İfraz Hatası:', e);
+          }
+        }
+        setStatusMessage(`Sol Kenar (Batı) Kenar #${edgeIndex + 1} olarak seçildi.`);
+      } else if (mode === 'right') {
+        pushUndoState(`Sağ Kenar (Doğu) Kenar #${edgeIndex + 1} Olarak Seçildi`);
+        const updatedConfig = {
+          ...config,
+          rightSideEdgeIndex: edgeIndex,
+          eastEdgeIndex: edgeIndex,
+          subdivisionMethod: 'trapezoidFrontage' as const
+        };
+        setConfig(updatedConfig);
+        if (mainPolygon) {
+          try {
+            const generated = runSubdivisionProcess(mainPolygon, updatedConfig, roadLines);
+            setParcels(generated);
+            setSelectedParcelIds([]);
+            isCadDirtyRef.current = false;
+          } catch (e: any) {
+            console.error('İfraz Hatası:', e);
+          }
+        }
+        setStatusMessage(`Sağ Kenar (Doğu) Kenar #${edgeIndex + 1} olarak seçildi.`);
+      }
+      setEdgeSelectionMode('none');
+    },
+    [config, mainPolygon, roadLines, handleToggleFrontageEdge, pushUndoState]
+  );
 
   // Save Settings ("Ayarlarımı Sakla")
   const handleSaveSettings = useCallback(() => {
@@ -490,7 +575,7 @@ export default function App() {
         })
       );
       setIsSettingsSaved(true);
-      setStatusMessage('Ayarlarınız (Gece/Gündüz, Saydamlık ve Tercihler) başarıyla saklandı.');
+      setStatusMessage('Ayarlarınız (Gece/Gündüz, Saydamlık, Buton ve Yazı Boyutu) başarıyla saklandı.');
       setTimeout(() => setIsSettingsSaved(false), 3000);
     } catch (e: any) {
       console.error('Save settings error:', e);
@@ -550,6 +635,8 @@ export default function App() {
         for (let pIdx = 0; pIdx < parsed.allParcels.length; pIdx++) {
           const item = parsed.allParcels[pIdx];
           const derived = await deriveCadastralLocation(item.geometry, item.cadastralInfo);
+          const topography = calculateParcelTopography(item.geometry);
+          const soilClassification = estimateSoilClassification(item.geometry, topography, derived);
           const loadedParcel: LoadedCadastralParcel = {
             id: item.id || `parcel-${fileId}-${pIdx}`,
             fileId,
@@ -559,7 +646,9 @@ export default function App() {
             cadastralInfo: derived,
             rawProperties: item.rawProperties || {},
             areaM2: item.areaM2,
-            isActive: false
+            isActive: false,
+            soilClassification,
+            topography
           };
           fileParcels.push(loadedParcel);
 
@@ -710,6 +799,9 @@ export default function App() {
             }))
             .filter((f) => f.parcels.length > 0);
 
+          const mergedTopo = calculateParcelTopography(unionGeometry);
+          const mergedSoil = estimateSoilClassification(unionGeometry, mergedTopo, mergedCadastral);
+
           const newLoadedParcel: LoadedCadastralParcel = {
             id: newActiveId,
             fileId: 'merged-files',
@@ -727,7 +819,9 @@ export default function App() {
               TEVHIT: 'EVET'
             },
             areaM2: newArea,
-            isActive: true
+            isActive: true,
+            topography: mergedTopo,
+            soilClassification: mergedSoil
           };
 
           if (updated.length > 0) {
@@ -877,6 +971,146 @@ export default function App() {
     triggerFileDownload(content, 'Tevhid_Ifraz_Koordinat_Listesi.csv', 'text/csv;charset=utf-8;');
   };
 
+  // Soil & Slope Analysis Modal Handler
+  const handleOpenSoilAnalysis = useCallback((parcel?: LoadedCadastralParcel | GeneratedParcel, tab: 'soil' | 'slope' = 'soil') => {
+    if (parcel) {
+      setSoilModalParcelId(parcel.id);
+    } else if (activeParcelId) {
+      setSoilModalParcelId(activeParcelId);
+    } else if (parcels[0]) {
+      setSoilModalParcelId(parcels[0].id);
+    }
+    setSoilModalInitialTab(tab);
+    setIsSoilModalOpen(true);
+  }, [activeParcelId, parcels]);
+
+  const handleUpdateSoilClass = useCallback(
+    (parcelId: string, newClass: 'ZA' | 'ZB' | 'ZC' | 'ZD' | 'ZE' | 'ZF') => {
+      const details = getSoilClassDetails(newClass);
+
+      // Update generated parcels if matches
+      setParcels((prev) =>
+        prev.map((p) => (p.id === parcelId ? { ...p, soilClassification: details } : p))
+      );
+
+      // Update loaded files parcels if matches
+      setLoadedFiles((prev) =>
+        prev.map((f) => ({
+          ...f,
+          parcels: f.parcels.map((p) => (p.id === parcelId ? { ...p, soilClassification: details } : p))
+        }))
+      );
+
+      setStatusMessage(`Zemin Sınıfı güncellendi: ${newClass} (qa = ${details.bearingCapacityKgCm2} kg/cm²).`);
+    },
+    []
+  );
+
+  // Handle saving of newly hand-drawn parcel with user-specified name and mode
+  const handleSaveDrawnParcel = useCallback(
+    async (params: {
+      parcelName: string;
+      adaNo: string;
+      parselNo: string;
+      nitelik: string;
+      targetMode: 'active' | 'secondary';
+    }) => {
+      if (!pendingDrawnPolygon) return;
+      pushUndoState(`Haritada Yeni Parsel Eklendi: ${params.parcelName}`);
+
+      const areaM2 = turf.area(pendingDrawnPolygon);
+      const derivedLocation = await deriveCadastralLocation(pendingDrawnPolygon);
+      const topography = calculateParcelTopography(pendingDrawnPolygon);
+      const finalCadastral: CadastralInfo = {
+        il: derivedLocation.il || cadastralInfo.il || 'Ankara',
+        ilce: derivedLocation.ilce || cadastralInfo.ilce || 'Gölbaşı',
+        mahalle: derivedLocation.mahalle || cadastralInfo.mahalle || 'İncek',
+        adaNo: params.adaNo || derivedLocation.adaNo || '101',
+        parselNo: params.parselNo || derivedLocation.parselNo || '1',
+        mevkii: cadastralInfo.mevkii || 'Köy İçi',
+        nitelik: params.nitelik || 'Arsa / Parsel',
+        tapuAlaniM2: areaM2,
+        source: 'manual'
+      };
+      const soilClassification = estimateSoilClassification(pendingDrawnPolygon, topography, finalCadastral);
+
+      const newParcelId = `drawn-parcel-${Date.now()}`;
+      const newLoadedParcel: LoadedCadastralParcel = {
+        id: newParcelId,
+        fileId: 'manual-drawings',
+        fileName: 'Çizilen_Parseller',
+        name: params.parcelName || `${finalCadastral.adaNo}/${finalCadastral.parselNo}`,
+        geometry: pendingDrawnPolygon,
+        cadastralInfo: finalCadastral,
+        rawProperties: {
+          AD: params.parcelName,
+          ADA: finalCadastral.adaNo,
+          PARSEL: finalCadastral.parselNo,
+          NITELIK: finalCadastral.nitelik || '',
+          ALAN: areaM2.toFixed(2),
+          KAYNAK: 'Elle Çizim'
+        },
+        areaM2,
+        isActive: params.targetMode === 'active',
+        topography,
+        soilClassification
+      };
+
+      // Add to loadedFiles under manual-drawings group
+      setLoadedFiles((prev) => {
+        const existingGroupIndex = prev.findIndex((f) => f.id === 'manual-drawings');
+        if (existingGroupIndex >= 0) {
+          const updated = [...prev];
+          updated[existingGroupIndex] = {
+            ...updated[existingGroupIndex],
+            parcels: [newLoadedParcel, ...updated[existingGroupIndex].parcels]
+          };
+          return updated;
+        } else {
+          return [
+            ...prev,
+            {
+              id: 'manual-drawings',
+              fileName: 'Çizilen İlave Parseller',
+              uploadTime: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+              parcels: [newLoadedParcel],
+              roadLines: []
+            }
+          ];
+        }
+      });
+
+      if (params.targetMode === 'active') {
+        // Set directly as active parcel for subdivision
+        setMainPolygon(pendingDrawnPolygon);
+        setCadastralInfo(finalCadastral);
+        setActiveParcelId(newParcelId);
+        setSelectedFrontageEdgeIndices([]);
+        setStatusMessage(
+          `Aktif İfraz Parseli Belirlendi: ${params.parcelName} (${finalCadastral.adaNo}/${finalCadastral.parselNo}) - ${areaM2.toFixed(1)} m²`
+        );
+      } else {
+        // Kept as secondary/additional parcel (can be merged or selected anytime)
+        setStatusMessage(
+          `İlave Parsel Eklendi: ${params.parcelName} (${finalCadastral.adaNo}/${finalCadastral.parselNo}) - ${areaM2.toFixed(1)} m². Sürükle-bırak ile tevhit edilebilir veya listeden aktif yapılabilir.`
+        );
+      }
+
+      setPendingDrawnPolygon(null);
+      setActiveDrawTool(null);
+    },
+    [pendingDrawnPolygon, cadastralInfo, pushUndoState]
+  );
+
+  const handlePolygonCreated = useCallback(
+    (poly: ParcelGeometry) => {
+      setPendingDrawnPolygon(poly);
+      setIsDrawnParcelModalOpen(true);
+      setActiveDrawTool(null);
+    },
+    []
+  );
+
   // Calculate Real-time Summary Statistics
   const stats: StatsSummary = useMemo(() => {
     if (parcels.length === 0) {
@@ -927,7 +1161,9 @@ export default function App() {
           : 'theme-dark bg-slate-950 text-slate-100'
       }`}
       style={{
-        ['--panel-opacity' as any]: (mapSettings.uiOpacity ?? 78) / 100
+        ['--panel-opacity' as any]: (mapSettings.uiOpacity ?? 78) / 100,
+        ['--ui-scale' as any]: `${(mapSettings.uiScale ?? 100) / 100}`,
+        fontSize: `${(mapSettings.uiScale ?? 100) / 100}rem`
       }}
     >
       {/* Map Element */}
@@ -945,24 +1181,25 @@ export default function App() {
         selectedParcelIds={selectedParcelIds}
         onParcelSelectToggle={handleParcelSelectToggle}
         onDragMerge={handleDragMerge}
-        onPolygonCreated={(poly) => {
-          pushUndoState('Haritada Yeni Parsel Çizildi');
-          setMainPolygon(poly);
-          setSelectedFrontageEdgeIndices([]);
-          deriveCadastralLocation(poly).then((loc) => {
-            setCadastralInfo(loc);
-            setStatusMessage(`Çizilen Konum: ${loc.il} / ${loc.ilce} • ${loc.mahalle} (Ada: ${loc.adaNo}, Parsel: ${loc.parselNo})`);
-          });
-        }}
+        onPolygonCreated={handlePolygonCreated}
         onRoadLineCreated={(line) => setRoadLines((prev) => [...prev, line])}
         onParcelGeometryUpdated={handleParcelGeometryUpdated}
         onParcelSliced={handleParcelSliced}
         onToggleCadMode={(active) => setMapSettings((prev) => ({ ...prev, cadModeActive: active }))}
         onChangeCadTool={(tool) => setMapSettings((prev) => ({ ...prev, cadActiveTool: tool }))}
         isSelectingFrontageEdge={isSelectingFrontageEdge}
+        edgeSelectionMode={edgeSelectionMode}
         selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
+        westEdgeIndex={config.westEdgeIndex}
+        eastEdgeIndex={config.eastEdgeIndex}
+        leftSideEdgeIndex={config.leftSideEdgeIndex}
+        rightSideEdgeIndex={config.rightSideEdgeIndex}
         onToggleFrontageEdge={handleToggleFrontageEdge}
-        onDoneSelectingFrontage={() => setIsSelectingFrontageEdge(false)}
+        onSelectEdgeForMode={handleSelectEdgeForMode}
+        onDoneSelectingFrontage={() => {
+          setIsSelectingFrontageEdge(false);
+          setEdgeSelectionMode('none');
+        }}
         onToggleDragMerge={handleToggleDragMerge}
         onOpenAttributeDrawer={() => setIsAttributeDrawerOpen(true)}
         loadedParcelsCount={allLoadedParcels.length}
@@ -970,6 +1207,8 @@ export default function App() {
         secondaryParcels={secondaryParcels}
         onSelectActiveParcel={handleSelectActiveParcel}
         onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
+        externalDrawTool={activeDrawTool}
+        onActiveDrawToolChange={setActiveDrawTool}
       />
 
       {/* Floating Control Panel */}
@@ -994,17 +1233,29 @@ export default function App() {
         onUpdateParcelAttributes={handleUpdateParcelAttributes}
         statusMessage={statusMessage}
         onOpenPrintModal={() => setIsPrintModalOpen(true)}
+        onOpenSoilAnalysis={(tab) => handleOpenSoilAnalysis(undefined, tab || 'soil')}
         onRecalculate={handleRecalculate}
         roadLines={roadLines}
         mainPolygonEdges={mainPolygonEdges}
         selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
         isSelectingFrontageEdge={isSelectingFrontageEdge}
+        edgeSelectionMode={edgeSelectionMode}
+        onSetEdgeSelectionMode={setEdgeSelectionMode}
         onToggleSelectFrontageEdge={handleToggleSelectFrontageEdge}
         onToggleFrontageEdge={handleToggleFrontageEdge}
         onClearFrontage={handleClearFrontage}
         onSaveSettings={handleSaveSettings}
         onResetSettings={handleResetSettings}
         isSettingsSaved={isSettingsSaved}
+        isDrawingPolygon={activeDrawTool === 'polygon'}
+        onToggleDrawPolygon={() => {
+          setActiveDrawTool((prev) => (prev === 'polygon' ? null : 'polygon'));
+          setStatusMessage(
+            activeDrawTool === 'polygon'
+              ? 'Parsel çizimi kapatıldı.'
+              : 'Elle Parsel Alanı Çizimi Aktif: Harita üzerinde köşe noktalarını tıklayarak parselinizi oluşturun. Bitirmek için çift tıklayın veya ilk noktaya tıklayın.'
+          );
+        }}
       />
 
       {/* Official Cadastral Print / PDF Report Modal */}
@@ -1034,12 +1285,42 @@ export default function App() {
         onRemoveParcel={handleRemoveParcel}
         onMergeParcels={handleMergeLoadedParcels}
         onUploadAdditionalKML={handleKMLUpload}
+        onOpenSoilAnalysis={(parcel, tab) => handleOpenSoilAnalysis(parcel, tab || 'soil')}
       />
 
-      {/* Draggable Base Map (Altlık Harita) Button in Bottom-Right Corner */}
-      <DraggableBaseMapControl
-        mapSettings={mapSettings}
-        onChangeMapSettings={setMapSettings}
+      {/* TBDY 2018 Soil Type & Geotechnical Analysis / Slope Report Modal */}
+      <SoilAnalysisModal
+        isOpen={isSoilModalOpen}
+        onClose={() => setIsSoilModalOpen(false)}
+        initialTab={soilModalInitialTab}
+        activeParcel={
+          allLoadedParcels.find((p) => p.id === soilModalParcelId) ||
+          parcels.find((p) => p.id === soilModalParcelId) ||
+          allLoadedParcels[0] ||
+          parcels[0] ||
+          null
+        }
+        allParcels={[...allLoadedParcels, ...parcels]}
+        onSelectParcel={(id) => setSoilModalParcelId(id)}
+        onUpdateSoilClass={handleUpdateSoilClass}
+      />
+
+      {/* Hand-Drawn Parcel Naming & Attribute Modal */}
+      <NewDrawnParcelModal
+        isOpen={isDrawnParcelModalOpen}
+        onClose={() => {
+          setIsDrawnParcelModalOpen(false);
+          setPendingDrawnPolygon(null);
+        }}
+        geometry={pendingDrawnPolygon}
+        defaultLocation={{
+          il: cadastralInfo.il,
+          ilce: cadastralInfo.ilce,
+          mahalle: cadastralInfo.mahalle,
+          adaNo: cadastralInfo.adaNo,
+          parselNo: cadastralInfo.parselNo
+        }}
+        onSaveParcel={handleSaveDrawnParcel}
       />
 
       {/* Dynamic Status / Bilgi Barı (Alt Ekran Apple-Glass Dinamik Ada) */}
