@@ -154,6 +154,8 @@ export interface MapSettings {
   showAreas: boolean;
   showEdgeLengths: boolean;
   showCadastre?: boolean; // Balastro / Kadastro parsel sınırları görünürlüğü
+  showSlopeInfo?: boolean; // Eğim ve topoğrafik yükseklik bilgisi görünürlüğü
+  showSoilInfo?: boolean; // Zemin türü ve taşıma gücü bilgisi görünürlüğü
   enableDragMerge: boolean;
   selectModeMerge: boolean;
   cadModeActive: boolean; // CAD ekranı gibi vertex ve köşe düzenleme modu

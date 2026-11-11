@@ -85,6 +85,8 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   showAreas: true,
   showEdgeLengths: true,
   showCadastre: true,
+  showSlopeInfo: true,
+  showSoilInfo: true,
   enableDragMerge: false,
   selectModeMerge: true,
   cadModeActive: false,

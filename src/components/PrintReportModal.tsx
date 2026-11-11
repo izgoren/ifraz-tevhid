@@ -141,8 +141,11 @@ export const PrintReportModal: React.FC<PrintReportModalProps> = ({
           if (len < 0.5) continue;
 
           let angle = Math.atan2(y2 - y1, x2 - x1) * (180 / Math.PI);
-          while (angle > 90) angle -= 180;
-          while (angle < -90) angle += 180;
+          if (!Number.isFinite(angle)) {
+            angle = 0;
+          } else {
+            angle = ((((angle + 90) % 180) + 180) % 180) - 90;
+          }
 
           edges.push({
             x1, y1, x2, y2,

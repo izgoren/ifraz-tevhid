@@ -28,7 +28,9 @@ import {
   Ruler,
   Maximize2,
   TableProperties,
-  Landmark
+  Landmark,
+  Mountain,
+  HardHat
 } from 'lucide-react';
 
 interface MapContainerProps {
@@ -1082,18 +1084,18 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       // Tooltip content
       const labelParts: string[] = [];
       if (mapSettings.showNames) labelParts.push(`<b>${p.name}</b>`);
-      if (mapSettings.showAreas) labelParts.push(`${p.areaM2.toFixed(1)} m²`);
-      if (p.frontageM > 0 || (p.rearWidthM !== undefined && p.rearWidthM > 0)) {
+      if (mapSettings.showAreas) labelParts.push(`${(p.areaM2 || 0).toFixed(1)} m²`);
+      if ((p.frontageM || 0) > 0 || (p.rearWidthM !== undefined && p.rearWidthM > 0)) {
         labelParts.push(
-          `<span style="font-size: 10px; opacity: 0.95;">Yol: ${p.frontageM.toFixed(1)}m | Bitiş: ${(p.rearWidthM || 0).toFixed(1)}m</span>`
+          `<span style="font-size: 10px; opacity: 0.95;">Yol: ${(p.frontageM || 0).toFixed(1)}m | Bitiş: ${(p.rearWidthM || 0).toFixed(1)}m</span>`
         );
       }
-      if (p.topography) {
+      if (p.topography && (mapSettings.showSlopeInfo ?? true)) {
         labelParts.push(
           `<span style="font-size: 9.5px; color: #6ee7b7; font-weight: 600;">Eğim: %${p.topography.avgSlopePercent} (${p.topography.aspect}) | ΔZ: ${p.topography.elevationDiffM}m</span>`
         );
       }
-      if (p.soilClassification) {
+      if (p.soilClassification && (mapSettings.showSoilInfo ?? true)) {
         labelParts.push(
           `<span style="font-size: 9px; color: #fcd34d; font-weight: 600;">🏗️ Zemin: ${p.soilClassification.soilClass} (qa: ${p.soilClassification.bearingCapacityKgCm2} kg)</span>`
         );
@@ -1216,15 +1218,18 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             const p1 = turf.point(coords[i]);
             const p2 = turf.point(coords[i + 1]);
             const dist = turf.distance(p1, p2, { units: 'meters' });
-            if (dist < 0.4) continue; // Skip micro-vertices
+            if (!Number.isFinite(dist) || dist < 0.4) continue; // Skip micro-vertices
             const mid = turf.midpoint(p1, p2);
 
             // Parallel angle calculation
             const bearing = turf.rhumbBearing(p1, p2);
             let angleDeg = bearing - 90;
             // CAD standard readability: keep text readable left-to-right (no upside down text)
-            while (angleDeg > 90) angleDeg -= 180;
-            while (angleDeg < -90) angleDeg -= 180;
+            if (!Number.isFinite(angleDeg)) {
+              angleDeg = 0;
+            } else {
+              angleDeg = ((((angleDeg + 90) % 180) + 180) % 180) - 90;
+            }
 
             // Check if this edge is adjacent to a road boundary line
             let isRoadFrontageEdge = false;
@@ -1635,7 +1640,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* Parsel / Poligon Çiz */}
           <button
-            onClick={handleToggleDrawPolygon}
+            onClick={() => {
+              handleToggleDrawPolygon();
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'polygon'
                 ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
@@ -1656,7 +1664,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* İmar Yolu / Çizgi Çiz */}
           <button
-            onClick={handleToggleDrawLine}
+            onClick={() => {
+              handleToggleDrawLine();
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'line'
                 ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
@@ -1677,7 +1688,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* Katman / Parsel Sil */}
           <button
-            onClick={handleToggleRemovalMode}
+            onClick={() => {
+              handleToggleRemovalMode();
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'delete'
                 ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
@@ -1707,7 +1721,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* CAD Köşe Düzenle */}
           <button
-            onClick={handleToggleCadVertex}
+            onClick={() => {
+              handleToggleCadVertex();
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'
                 ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
@@ -1730,7 +1747,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* CAD Bıçağı */}
           <button
-            onClick={handleToggleCadSlice}
+            onClick={() => {
+              handleToggleCadSlice();
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice'
                 ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
@@ -1753,6 +1773,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           <button
             onClick={() => {
               if (onToggleDragMerge) onToggleDragMerge();
+              setIsRightMenuOpen(false);
             }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.enableDragMerge
@@ -1778,7 +1799,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* Köşe Koordinatları Tablosu */}
           <button
-            onClick={() => setShowVertexTable((prev) => !prev)}
+            onClick={() => {
+              setShowVertexTable((prev) => !prev);
+              setIsRightMenuOpen(false);
+            }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               showVertexTable
                 ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
@@ -1859,6 +1883,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                         if (onChangeMapSettings) {
                           onChangeMapSettings({ ...mapSettings, parcelFillOpacity: preset.val, showFill: preset.val > 0 });
                         }
+                        setShowOpacityPopover(false);
+                        setIsRightMenuOpen(false);
                       }}
                       className={`text-[10px] py-1 rounded-lg font-mono transition border ${
                         (mapSettings.parcelFillOpacity ?? 45) === preset.val
@@ -1882,7 +1908,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         <div className="space-y-1">
           <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
             <span>Görünürlük</span>
-            <Eye className="w-3 h-3 text-blue-400" />
+            <Eye className="w-3.5 h-3.5 text-blue-400" />
           </div>
 
           {[
@@ -1920,11 +1946,29 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               title: 'Kenar Ölçülerini Aç / Kapat',
               icon: Ruler,
               activeColor: 'text-purple-400'
+            },
+            {
+              key: 'showSlopeInfo',
+              label: 'Eğim Bilgisi',
+              title: 'Parsel Topoğrafik Eğim ve Kot Farkı Bilgisini Aç / Kapat',
+              icon: Mountain,
+              activeColor: 'text-teal-400'
+            },
+            {
+              key: 'showSoilInfo',
+              label: 'Zemin Bilgisi',
+              title: 'Parsel Jeoteknik Zemin Alan Bilgisini (TBDY 2018) Aç / Kapat',
+              icon: HardHat,
+              activeColor: 'text-amber-400'
             }
           ].map((item) => {
             const isChecked =
               item.key === 'showCadastre'
                 ? (mapSettings.showCadastre ?? true)
+                : item.key === 'showSlopeInfo'
+                ? (mapSettings.showSlopeInfo ?? true)
+                : item.key === 'showSoilInfo'
+                ? (mapSettings.showSoilInfo ?? true)
                 : !!(mapSettings as any)[item.key];
             const Icon = item.icon;
             return (
@@ -1934,6 +1978,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                   if (onChangeMapSettings) {
                     onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
                   }
+                  setIsRightMenuOpen(false);
                 }}
                 className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                   isChecked
@@ -1962,7 +2007,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           {/* Öznitelik Bilgileri Butonu */}
           {onOpenAttributeDrawer && (
             <button
-              onClick={onOpenAttributeDrawer}
+              onClick={() => {
+                onOpenAttributeDrawer();
+                setIsRightMenuOpen(false);
+              }}
               className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                 isAttributeDrawerOpen
                   ? 'bg-amber-500 text-slate-950 font-bold border border-amber-400 shadow-md shadow-amber-500/20'

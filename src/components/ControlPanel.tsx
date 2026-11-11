@@ -36,7 +36,9 @@ import {
   Shapes,
   Type,
   ZoomIn,
-  ZoomOut
+  ZoomOut,
+  HardHat,
+  Eye
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -411,7 +413,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Tema</label>
                 <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] grid grid-cols-2 gap-1.5">
                   <button
-                    onClick={() => handleSettingChange('theme', 'dark')}
+                    onClick={() => {
+                      handleSettingChange('theme', 'dark');
+                      setShowSettingsMenu(false);
+                    }}
                     className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
                       mapSettings.theme === 'dark'
                         ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
@@ -422,7 +427,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     <span>Gece Modu</span>
                   </button>
                   <button
-                    onClick={() => handleSettingChange('theme', 'light')}
+                    onClick={() => {
+                      handleSettingChange('theme', 'light');
+                      setShowSettingsMenu(false);
+                    }}
                     className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
                       mapSettings.theme === 'light'
                         ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
@@ -467,7 +475,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 <div className="grid grid-cols-3 gap-1 bg-white/[0.04] p-1 rounded-xl border border-white/[0.06]">
                   <button
                     type="button"
-                    onClick={() => handleSettingChange('uiScale', 100)}
+                    onClick={() => {
+                      handleSettingChange('uiScale', 100);
+                      setShowSettingsMenu(false);
+                    }}
                     className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
                       (mapSettings.uiScale ?? 100) === 100
                         ? 'bg-cyan-500 text-white font-bold shadow-sm'
@@ -480,7 +491,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => handleSettingChange('uiScale', 112)}
+                    onClick={() => {
+                      handleSettingChange('uiScale', 112);
+                      setShowSettingsMenu(false);
+                    }}
                     className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
                       (mapSettings.uiScale ?? 100) === 112
                         ? 'bg-cyan-500 text-white font-bold shadow-sm'
@@ -493,7 +507,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
                   <button
                     type="button"
-                    onClick={() => handleSettingChange('uiScale', 125)}
+                    onClick={() => {
+                      handleSettingChange('uiScale', 125);
+                      setShowSettingsMenu(false);
+                    }}
                     className={`py-1.5 px-2 rounded-lg text-center transition text-xs flex flex-col items-center gap-0.5 ${
                       (mapSettings.uiScale ?? 100) === 125
                         ? 'bg-cyan-500 text-white font-bold shadow-sm'
@@ -605,12 +622,66 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 )}
               </div>
 
+              {/* Görünürlük Katmanları */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400 uppercase tracking-wider">
+                  <div className="flex items-center gap-1.5">
+                    <Eye className="w-3.5 h-3.5 text-blue-400" />
+                    <span>Görünürlük Katmanları</span>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  {[
+                    { key: 'showCadastre', label: 'Balastro', defaultVal: true },
+                    { key: 'showFill', label: 'Dolgu', defaultVal: true },
+                    { key: 'showNames', label: 'Parsel No', defaultVal: true },
+                    { key: 'showAreas', label: 'Alan (m²)', defaultVal: true },
+                    { key: 'showEdgeLengths', label: 'Kenar (m)', defaultVal: true },
+                    { key: 'showSlopeInfo', label: 'Eğim Bilgisi', defaultVal: true },
+                    { key: 'showSoilInfo', label: 'Zemin Bilgisi', defaultVal: true }
+                  ].map((layer) => {
+                    const active =
+                      layer.key === 'showCadastre'
+                        ? (mapSettings.showCadastre ?? true)
+                        : layer.key === 'showSlopeInfo'
+                        ? (mapSettings.showSlopeInfo ?? true)
+                        : layer.key === 'showSoilInfo'
+                        ? (mapSettings.showSoilInfo ?? true)
+                        : !!(mapSettings as any)[layer.key];
+                    return (
+                      <button
+                        key={layer.key}
+                        type="button"
+                        onClick={() => {
+                          handleSettingChange(layer.key as any, !active);
+                          setShowSettingsMenu(false);
+                        }}
+                        className={`py-1.5 px-2 rounded-xl text-left text-xs font-medium transition flex items-center justify-between border ${
+                          active
+                            ? 'bg-blue-500/20 text-white font-semibold border-blue-400/40 shadow-sm'
+                            : 'bg-white/[0.04] text-slate-400 hover:text-slate-200 border-white/[0.06] hover:bg-white/[0.08]'
+                        }`}
+                      >
+                        <span className="text-[11px] truncate">{layer.label}</span>
+                        <span className={`text-[9px] font-mono font-bold px-1 rounded ${active ? 'text-blue-300 bg-blue-500/30' : 'text-slate-500'}`}>
+                          {active ? 'AÇIK' : 'KAPALI'}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* Ayarları Sakla / Sıfırla */}
               <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
                 <div className="flex items-center gap-2">
                   {onSaveSettings && (
                     <button
-                      onClick={onSaveSettings}
+                      onClick={() => {
+                        onSaveSettings();
+                        setShowSettingsMenu(false);
+                      }}
                       className="flex-1 bg-emerald-600 hover:bg-emerald-500 active:bg-emerald-700 text-white font-medium py-1.5 px-2.5 rounded-xl flex items-center justify-center gap-1.5 transition active:scale-[0.98] text-xs shadow-sm"
                     >
                       <Save className="w-3.5 h-3.5" />
@@ -619,7 +690,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                   )}
                   {onResetSettings && (
                     <button
-                      onClick={onResetSettings}
+                      onClick={() => {
+                        onResetSettings();
+                        setShowSettingsMenu(false);
+                      }}
                       className="py-1.5 px-2.5 bg-white/[0.05] hover:bg-white/10 text-slate-300 hover:text-white rounded-xl transition text-xs flex items-center gap-1"
                       title="Varsayılana Sıfırla"
                     >
@@ -693,7 +767,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             {/* Elle Parsel Alanı Çiz Butonu */}
             {onToggleDrawPolygon && (
               <button
-                onClick={onToggleDrawPolygon}
+                onClick={() => {
+                  onToggleDrawPolygon();
+                  setPanelOpen(false);
+                }}
                 className={`w-full h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 ${
                   isDrawingPolygon
                     ? 'bg-gradient-to-r from-blue-600 to-cyan-500 text-white font-bold shadow-lg shadow-blue-500/30 border border-cyan-300'
@@ -756,6 +833,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                         min={0}
                         max={60}
                         value={config.pieceCount}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') setShowPiecePopover(false);
+                        }}
                         onChange={(e) => {
                           const val = parseInt(e.target.value, 10);
                           handleConfigChange('pieceCount', Number.isNaN(val) ? 0 : Math.max(0, Math.min(60, val)));
@@ -793,7 +873,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     {[0, 1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24, 30, 40].map((num) => (
                       <button
                         key={num}
-                        onClick={() => handleConfigChange('pieceCount', num)}
+                        onClick={() => {
+                          handleConfigChange('pieceCount', num);
+                          setShowPiecePopover(false);
+                        }}
                         className={`text-[10px] py-1 rounded-lg font-mono transition border ${
                           config.pieceCount === num
                             ? 'bg-blue-500 text-white font-bold border-blue-400 shadow-sm shadow-blue-500/40'
@@ -849,7 +932,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     {[0, 45, 90, 135, 180].map((deg) => (
                       <button
                         key={deg}
-                        onClick={() => handleConfigChange('rotateAngle', deg)}
+                        onClick={() => {
+                          handleConfigChange('rotateAngle', deg);
+                          setShowAnglePopover(false);
+                        }}
                         className={`text-[10px] py-1 rounded-lg font-mono transition border ${
                           config.rotateAngle === deg
                             ? 'bg-amber-500 text-slate-950 font-bold border-amber-400'
@@ -894,7 +980,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     <input
                       type="checkbox"
                       checked={config.isDoubleRow}
-                      onChange={(e) => handleConfigChange('isDoubleRow', e.target.checked)}
+                      onChange={(e) => {
+                        handleConfigChange('isDoubleRow', e.target.checked);
+                        setShowDoubleRowPopover(false);
+                      }}
                       className="w-4 h-4 rounded-md accent-purple-500 cursor-pointer"
                     />
                   </label>
@@ -979,7 +1068,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             {onOpenSoilAnalysis && (
               <div className="grid grid-cols-2 gap-1.5">
                 <button
-                  onClick={() => onOpenSoilAnalysis('soil')}
+                  onClick={() => {
+                    onOpenSoilAnalysis('soil');
+                    setPanelOpen(false);
+                  }}
                   className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 hover:border-amber-400 shadow-sm"
                   title="TBDY 2018 Zemin Sınıfları (ZA-ZF), Vs30, Taşıma Gücü ve Jeoteknik Raporu"
                 >
@@ -993,7 +1085,10 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 </button>
 
                 <button
-                  onClick={() => onOpenSoilAnalysis('slope')}
+                  onClick={() => {
+                    onOpenSoilAnalysis('slope');
+                    setPanelOpen(false);
+                  }}
                   className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 border border-emerald-500/30 hover:border-emerald-400 shadow-sm"
                   title="Topoğrafik Eğim, Kot Farkı, Açığa Çıkan Katlar ve Mekânsal Yerleşime Uygunluk Raporu"
                 >
