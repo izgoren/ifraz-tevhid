@@ -8,6 +8,7 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 import { CadastralAttributeDrawer } from './components/CadastralAttributeDrawer';
 import { SoilAnalysisModal } from './components/SoilAnalysisModal';
 import { NewDrawnParcelModal } from './components/NewDrawnParcelModal';
+import { TkgmQueryBar, TkgmParcelProperties } from './components/TkgmQueryBar';
 import { estimateSoilClassification, getSoilClassDetails } from './utils/soilEstimation';
 import { calculateParcelTopography } from './utils/topographicSlope';
 import { Info } from 'lucide-react';
@@ -119,9 +120,18 @@ export default function App() {
   const [parcels, setParcels] = useState<GeneratedParcel[]>([]);
   const [selectedParcelIds, setSelectedParcelIds] = useState<string[]>([]);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState<boolean>(false);
+  const [isTkgmBarOpen, setIsTkgmBarOpen] = useState<boolean>(true);
+  const [tkgmTargetMode, setTkgmTargetMode] = useState<'active' | 'secondary'>('active');
+  const [isPickingTkgmParcel, setIsPickingTkgmParcel] = useState<boolean>(false);
+  const [isTkgmPickLoading, setIsTkgmPickLoading] = useState<boolean>(false);
+  const [tkgmPickResult, setTkgmPickResult] = useState<{
+    feature: ParcelGeometry;
+    properties: TkgmParcelProperties;
+  } | null>(null);
+  const [tkgmPickError, setTkgmPickError] = useState<string | null>(null);
   const [isSettingsSaved, setIsSettingsSaved] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
-    'Lütfen başlamak için KML/GeoJSON kadastro dosyası yükleyin veya harita üzerinde parsel çizin.'
+    'Lütfen başlamak için TKGM Parsel Sorgu barını kullanın, KML/GeoJSON yükleyin veya haritada parsel çizin.'
   );
 
   // Real Cadastral & Location Metadata (İl, İlçe, Mahalle, Ada, Parsel)
@@ -1220,6 +1230,157 @@ export default function App() {
     []
   );
 
+  // TKGM Parsel Sorgu Result Handler
+  const handleTkgmParcelLoaded = useCallback(
+    (
+      feature: ParcelGeometry,
+      props: TkgmParcelProperties,
+      targetMode: 'active' | 'secondary'
+    ) => {
+      pushUndoState(`TKGM Parsel Sorgu: Ada ${props.adaNo || '-'} / Parsel ${props.parselNo || '-'}`);
+
+      const geometricAreaM2 = turf.area(feature);
+      let tapuAreaM2 = geometricAreaM2;
+      if (props.alan) {
+        const raw = String(props.alan).trim();
+        const lastDot = raw.lastIndexOf('.');
+        const lastComma = raw.lastIndexOf(',');
+        let normalizedAlan = raw;
+        if (lastDot !== -1 && lastComma !== -1) {
+          if (lastDot > lastComma) {
+            // EN format: 3,811.00 or 646,250.00
+            normalizedAlan = raw.replace(/,/g, '');
+          } else {
+            // TR format: 3.811,00
+            normalizedAlan = raw.replace(/\./g, '').replace(',', '.');
+          }
+        } else if (lastComma !== -1) {
+          normalizedAlan = raw.replace(',', '.');
+        }
+        const parsedAlan = parseFloat(normalizedAlan);
+        if (!Number.isNaN(parsedAlan) && parsedAlan > 0) {
+          tapuAreaM2 = parsedAlan;
+        }
+      }
+
+      const finalCadastral: CadastralInfo = {
+        il: String(props.ilAd || cadastralInfo.il || ''),
+        ilce: String(props.ilceAd || cadastralInfo.ilce || ''),
+        mahalle: String(props.mahalleAd || cadastralInfo.mahalle || ''),
+        adaNo: String(props.adaNo ?? '').trim() || '0',
+        parselNo: String(props.parselNo ?? '').trim(),
+        mevkii: String(props.mevkii || props.zeminKmdurum || ''),
+        nitelik: String(props.nitelik || 'Arsa / Tarla'),
+        tapuAlaniM2: tapuAreaM2,
+        source: 'file'
+      };
+
+      const topography = calculateParcelTopography(feature);
+      const soilClassification = estimateSoilClassification(feature, topography, finalCadastral);
+
+      const newParcelId = `tkgm-${props.mahalleId || 'm'}-${finalCadastral.adaNo}-${finalCadastral.parselNo}-${Date.now()}`;
+      const rawPropsStrings: Record<string, string> = {};
+      for (const [k, v] of Object.entries(props || {})) {
+        if (v !== null && v !== undefined) {
+          rawPropsStrings[k] = String(v);
+        }
+      }
+
+      const newLoadedParcel: LoadedCadastralParcel = {
+        id: newParcelId,
+        fileId: 'tkgm-queries',
+        fileName: 'TKGM_Parsel_Sorgu.geojson',
+        name: `${finalCadastral.adaNo}/${finalCadastral.parselNo}`,
+        geometry: feature,
+        cadastralInfo: finalCadastral,
+        rawProperties: {
+          ...rawPropsStrings,
+          KAYNAK: 'TKGM Parsel Sorgu'
+        },
+        areaM2: tapuAreaM2 || geometricAreaM2,
+        isActive: targetMode === 'active',
+        topography,
+        soilClassification
+      };
+
+      setLoadedFiles((prev) => {
+        const existingGroupIndex = prev.findIndex((f) => f.id === 'tkgm-queries');
+        if (existingGroupIndex >= 0) {
+          const updated = [...prev];
+          const existingParcels = updated[existingGroupIndex].parcels.map((p) =>
+            targetMode === 'active' ? { ...p, isActive: false } : p
+          );
+          updated[existingGroupIndex] = {
+            ...updated[existingGroupIndex],
+            parcels: [newLoadedParcel, ...existingParcels]
+          };
+          return updated;
+        }
+        return [
+          ...prev,
+          {
+            id: 'tkgm-queries',
+            fileName: 'TKGM Parsel Sorgu',
+            uploadTime: new Date().toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' }),
+            parcels: [newLoadedParcel],
+            roadLines: []
+          }
+        ];
+      });
+
+      if (targetMode === 'active') {
+        setMainPolygon(feature);
+        setCadastralInfo(finalCadastral);
+        setActiveParcelId(newParcelId);
+        setSelectedFrontageEdgeIndices([]);
+        setIsSelectingFrontageEdge(false);
+        setStatusMessage(
+          `TKGM Parsel Yüklendi: ${finalCadastral.il} / ${finalCadastral.ilce} • ${finalCadastral.mahalle} (Ada: ${finalCadastral.adaNo}, Parsel: ${finalCadastral.parselNo}) • ${tapuAreaM2.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} m²`
+        );
+      } else {
+        setStatusMessage(
+          `TKGM İlave Parsel Eklendi: Ada ${finalCadastral.adaNo} / Parsel ${finalCadastral.parselNo} (${tapuAreaM2.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} m²). Tevhit için sürükleyip birleştirebilirsiniz.`
+        );
+      }
+    },
+    [cadastralInfo, pushUndoState]
+  );
+
+  // Haritadan Tıklanan Koordinat ile TKGM Parseli Getirme
+  const handlePickTkgmCoord = useCallback(
+    async (lat: number, lng: number) => {
+      if (isTkgmPickLoading) return;
+      setIsTkgmPickLoading(true);
+      setTkgmPickError(null);
+      setStatusMessage(`TKGM konum sorgulanıyor (${lat.toFixed(5)}, ${lng.toFixed(5)})...`);
+
+      try {
+        const res = await fetch(`/api/tkgm/parsel/${lat.toFixed(7)}/${lng.toFixed(7)}`);
+        const data = await res.json();
+
+        if (!res.ok || !data.success || !data.feature) {
+          throw new Error(data.error || 'Tıklanan noktada kayıtlı TKGM parseli bulunamadı.');
+        }
+
+        const feature = data.feature as ParcelGeometry;
+        const props = (data.properties || {}) as TkgmParcelProperties;
+        setTkgmPickResult({ feature, properties: props });
+        handleTkgmParcelLoaded(feature, props, tkgmTargetMode);
+
+        if (tkgmTargetMode === 'active') {
+          setIsPickingTkgmParcel(false);
+        }
+      } catch (err: any) {
+        const msg = err.message || 'Haritadan parsel sorgulaması başarısız oldu.';
+        setTkgmPickError(msg);
+        setStatusMessage(msg);
+      } finally {
+        setIsTkgmPickLoading(false);
+      }
+    },
+    [isTkgmPickLoading, tkgmTargetMode, handleTkgmParcelLoaded]
+  );
+
   // Calculate Real-time Summary Statistics
   const stats: StatsSummary = useMemo(() => {
     if (parcels.length === 0) {
@@ -1325,6 +1486,15 @@ export default function App() {
           onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
           externalDrawTool={activeDrawTool}
           onActiveDrawToolChange={setActiveDrawTool}
+          isPickingTkgmParcel={
+            isTkgmBarOpen &&
+            isPickingTkgmParcel &&
+            !mapSettings.cadModeActive &&
+            !isSelectingFrontageEdge &&
+            !isAdjustingCutAngle &&
+            !activeDrawTool
+          }
+          onPickTkgmCoord={handlePickTkgmCoord}
         />
       </div>
 
@@ -1404,8 +1574,59 @@ export default function App() {
             };
           });
         }}
+        isTkgmBarOpen={isTkgmBarOpen}
+        onToggleTkgmBar={() => {
+          setIsTkgmBarOpen((prev) => {
+            const next = !prev;
+            if (next) {
+              setIsSelectingFrontageEdge(false);
+              setEdgeSelectionMode('none');
+              setIsAdjustingCutAngle(false);
+              setActiveDrawTool(null);
+              setMapSettings((ms) => (ms.cadModeActive ? { ...ms, cadModeActive: false } : ms));
+            } else {
+              setIsPickingTkgmParcel(false);
+            }
+            return next;
+          });
+        }}
         />
       </div>
+
+      {/* TKGM Parsel Sorgu Floating Bar */}
+      {!mapSettings.cadModeActive && !isSelectingFrontageEdge && !isAdjustingCutAngle && !activeDrawTool && (
+        <TkgmQueryBar
+          isOpen={isTkgmBarOpen}
+          onClose={() => {
+            setIsTkgmBarOpen(false);
+            setIsPickingTkgmParcel(false);
+          }}
+          onParcelLoaded={handleTkgmParcelLoaded}
+          targetMode={tkgmTargetMode}
+          onChangeTargetMode={setTkgmTargetMode}
+          isMapPickMode={isPickingTkgmParcel}
+          onToggleMapPickMode={() => {
+            setIsPickingTkgmParcel((prev) => {
+              const next = !prev;
+              if (next) {
+                setIsSelectingFrontageEdge(false);
+                setEdgeSelectionMode('none');
+                setIsAdjustingCutAngle(false);
+                setActiveDrawTool(null);
+                setMapSettings((ms) => (ms.cadModeActive ? { ...ms, cadModeActive: false } : ms));
+                setStatusMessage('Haritadan Parsel Getir Aktif: Haritada parselini getirmek istediğiniz noktaya tıklayın.');
+              } else {
+                setStatusMessage('Haritadan parsel seçimi kapatıldı.');
+              }
+              return next;
+            });
+          }}
+          isMapPickLoading={isTkgmPickLoading}
+          externalResult={tkgmPickResult}
+          externalError={tkgmPickError}
+          onClearExternalError={() => setTkgmPickError(null)}
+        />
+      )}
 
       {/* Official Cadastral Print / PDF Report Modal */}
       <PrintReportModal

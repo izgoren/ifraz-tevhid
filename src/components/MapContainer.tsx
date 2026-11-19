@@ -34,7 +34,8 @@ import {
   RotateCw,
   Copy,
   Magnet,
-  Link2
+  Link2,
+  GripHorizontal
 } from 'lucide-react';
 import {
   CoordinateSystemId,
@@ -98,6 +99,8 @@ interface MapContainerProps {
   onDragMergeLoadedParcels?: (draggedId: string, targetId: string) => void;
   externalDrawTool?: 'polygon' | 'line' | 'delete' | null;
   onActiveDrawToolChange?: (tool: 'polygon' | 'line' | 'delete' | null) => void;
+  isPickingTkgmParcel?: boolean;
+  onPickTkgmCoord?: (lat: number, lng: number) => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -140,7 +143,9 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onSelectActiveParcel,
   onDragMergeLoadedParcels,
   externalDrawTool,
-  onActiveDrawToolChange
+  onActiveDrawToolChange,
+  isPickingTkgmParcel = false,
+  onPickTkgmCoord
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -158,6 +163,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const cadVertexLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
   const skipFitBoundsRef = useRef<boolean>(false);
+  const isPickingTkgmRef = useRef<boolean>(isPickingTkgmParcel);
+  isPickingTkgmRef.current = isPickingTkgmParcel;
 
   const [showVertexTable, setShowVertexTable] = useState(false);
   const [coordSystem, setCoordSystem] = useState<CoordinateSystemId>('TUREF_TM3');
@@ -165,8 +172,83 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const [selectedVertexParcelId, setSelectedVertexParcelId] = useState<string | null>(null);
   const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeDrawTool, setActiveDrawToolState] = useState<'polygon' | 'line' | 'delete' | null>(null);
-  const [showOpacityPopover, setShowOpacityPopover] = useState(false);
   const [isRightMenuOpen, setIsRightMenuOpen] = useState(true);
+  const [isVisibilityOpen, setIsVisibilityOpen] = useState(true);
+  const visibilityPanelRef = useRef<HTMLDivElement | null>(null);
+  const [visibilityPos, setVisibilityPos] = useState<{ x: number; y: number }>(() => {
+    if (typeof window === 'undefined') return { x: 16, y: 340 };
+    try {
+      const saved = localStorage.getItem('ifraz_visibility_panel_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          return {
+            x: Math.max(8, Math.min(window.innerWidth - 216, parsed.x)),
+            y: Math.max(8, Math.min(window.innerHeight - 260, parsed.y))
+          };
+        }
+      }
+    } catch {}
+    return {
+      x: Math.max(8, window.innerWidth - 216),
+      y: Math.min(350, Math.max(70, window.innerHeight - 440))
+    };
+  });
+
+  // Clamp draggable Görünürlük panel inside viewport on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      const panelEl = visibilityPanelRef.current;
+      const w = panelEl?.offsetWidth || 200;
+      const h = panelEl?.offsetHeight || 220;
+      setVisibilityPos((prev) => ({
+        x: Math.max(8, Math.min(window.innerWidth - w - 8, prev.x)),
+        y: Math.max(8, Math.min(window.innerHeight - h - 8, prev.y))
+      }));
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleVisibilityDragStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest('button')) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const origX = visibilityPos.x;
+      const origY = visibilityPos.y;
+      const panelEl = visibilityPanelRef.current;
+      const panelW = panelEl?.offsetWidth || 200;
+      const panelH = panelEl?.offsetHeight || 220;
+      let latestPos = { x: origX, y: origY };
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        const nextX = Math.max(8, Math.min(window.innerWidth - panelW - 8, origX + dx));
+        const nextY = Math.max(8, Math.min(window.innerHeight - panelH - 8, origY + dy));
+        latestPos = { x: nextX, y: nextY };
+        setVisibilityPos(latestPos);
+      };
+
+      const onPointerUp = () => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
+        try {
+          localStorage.setItem('ifraz_visibility_panel_pos', JSON.stringify(latestPos));
+        } catch {}
+      };
+
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
+    },
+    [visibilityPos]
+  );
 
   // Dynamic-line CAD vertex editing mode & live drag HUD
   const [dynamicLineMode, setDynamicLineMode] = useState<DynamicLineMode>('auto');
@@ -732,6 +814,32 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   }, [onPolygonCreated, onRoadLineCreated, mapSettings.cadModeActive, mapSettings.cadActiveTool, cadActiveParcel, parcels, onParcelSliced]);
 
+  // Handle TKGM Map-Click Parcel Lookup Mode
+  useEffect(() => {
+    const map = mapRef.current;
+    const container = map?.getContainer();
+    if (!map) return;
+
+    if (container) {
+      container.style.cursor = isPickingTkgmParcel ? 'crosshair' : '';
+    }
+
+    if (!isPickingTkgmParcel || !onPickTkgmCoord) return;
+
+    const handleTkgmMapClick = (e: L.LeafletMouseEvent) => {
+      if (!e.latlng) return;
+      onPickTkgmCoord(e.latlng.lat, e.latlng.lng);
+    };
+
+    map.on('click', handleTkgmMapClick);
+    return () => {
+      map.off('click', handleTkgmMapClick);
+      if (container) {
+        container.style.cursor = '';
+      }
+    };
+  }, [isPickingTkgmParcel, onPickTkgmCoord]);
+
   // Handle CAD Slice Tool Activation in Map
   useEffect(() => {
     const map = mapRef.current;
@@ -901,6 +1009,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       }).addTo(secondaryParcelsGroupRef.current!);
 
       geoLayer.on('click', () => {
+        if (isPickingTkgmRef.current) return;
         if (!isDragMergeActive && onSelectActiveParcel) {
           onSelectActiveParcel(sp);
         }
@@ -1350,6 +1459,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       // Click to select
       geoJsonLayer.on('click', (e) => {
+        if (isPickingTkgmRef.current) return;
         L.DomEvent.stopPropagation(e);
         onParcelSelectToggle(p.id);
       });
@@ -2379,16 +2489,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* Parsel / Poligon Çiz */}
           <button
-            onClick={() => {
-              handleToggleDrawPolygon();
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => handleToggleDrawPolygon()}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'polygon'
                 ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
                 : 'text-slate-300 hover:text-white hover:bg-white/10'
             }`}
-            title="Haritada yeni parsel veya poligon çizin (Bitirmek için ilk noktaya veya çift tıklayın)"
+            title="Haritada yeni parsel veya poligon çizin (Tekrar tıklayarak kapatabilirsiniz)"
           >
             <div className="flex items-center gap-1.5">
               <Shapes className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'polygon' ? 'text-white' : 'text-blue-400'}`} />
@@ -2396,23 +2503,20 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {activeDrawTool === 'polygon' && (
               <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
-                ÇİZİLİYOR
+                KAPAT
               </span>
             )}
           </button>
 
           {/* İmar Yolu / Çizgi Çiz */}
           <button
-            onClick={() => {
-              handleToggleDrawLine();
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => handleToggleDrawLine()}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'line'
                 ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
                 : 'text-slate-300 hover:text-white hover:bg-white/10'
             }`}
-            title="Harita üzerine imar yolu veya referans çizgisi çizin"
+            title="Harita üzerine imar yolu veya referans çizgisi çizin (Tekrar tıklayarak kapatabilirsiniz)"
           >
             <div className="flex items-center gap-1.5">
               <Spline className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'line' ? 'text-slate-950' : 'text-amber-400'}`} />
@@ -2420,17 +2524,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {activeDrawTool === 'line' && (
               <span className="text-[9px] bg-amber-600 text-slate-950 px-1.5 py-0.5 rounded font-bold">
-                ÇİZİLİYOR
+                KAPAT
               </span>
             )}
           </button>
 
           {/* Katman / Parsel Sil */}
           <button
-            onClick={() => {
-              handleToggleRemovalMode();
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => handleToggleRemovalMode()}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               activeDrawTool === 'delete'
                 ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
@@ -2444,7 +2545,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {activeDrawTool === 'delete' && (
               <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
-                AKTİF
+                KAPAT
               </span>
             )}
           </button>
@@ -2460,10 +2561,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
           {/* CAD Köşe Düzenle */}
           <button
-            onClick={() => {
-              handleToggleCadVertex();
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => handleToggleCadVertex()}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'
                 ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
@@ -2479,17 +2577,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' && (
               <span className="text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded font-bold">
-                AÇIK
+                KAPAT
               </span>
             )}
           </button>
 
           {/* CAD Bıçağı */}
           <button
-            onClick={() => {
-              handleToggleCadSlice();
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => handleToggleCadSlice()}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice'
                 ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
@@ -2503,7 +2598,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' && (
               <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
-                AÇIK
+                KAPAT
               </span>
             )}
           </button>
@@ -2512,7 +2607,6 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           <button
             onClick={() => {
               if (onToggleDragMerge) onToggleDragMerge();
-              setIsRightMenuOpen(false);
             }}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               mapSettings.enableDragMerge
@@ -2531,17 +2625,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {mapSettings.enableDragMerge && (
               <span className="text-[9px] bg-purple-900/90 text-purple-200 px-1.5 py-0.5 rounded font-bold">
-                AÇIK
+                KAPAT
               </span>
             )}
           </button>
 
           {/* Köşe Koordinatları Tablosu */}
           <button
-            onClick={() => {
-              setShowVertexTable((prev) => !prev);
-              setIsRightMenuOpen(false);
-            }}
+            onClick={() => setShowVertexTable((prev) => !prev)}
             className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
               showVertexTable
                 ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
@@ -2555,267 +2646,282 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </div>
             {showVertexTable && (
               <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
-                AÇIK
+                KAPAT
               </span>
             )}
           </button>
+        </div>
+      </div>
+      )}
 
-          {/* Parsel Dolgu Saydamlığı Butonu */}
-          <div className="relative">
+      {/* ================= AYRI SÜRÜKLENEBİLİR GÖRÜNÜRLÜK PANELİ ================= */}
+      {!isVisibilityOpen && (
+        <div
+          ref={visibilityPanelRef}
+          onPointerDown={handleVisibilityDragStart}
+          style={{ left: `${visibilityPos.x}px`, top: `${visibilityPos.y}px` }}
+          className="no-print fixed z-[998] apple-glass rounded-full px-2.5 h-9 flex items-center gap-1.5 text-white shadow-[0_12px_36px_rgba(0,0,0,0.45)] border border-white/15 cursor-grab active:cursor-grabbing select-none touch-none"
+          title="Sürükleyerek taşıyabilir veya tıklayarak Görünürlük panelini açabilirsiniz"
+        >
+          <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <button
+            type="button"
+            onClick={() => setIsVisibilityOpen(true)}
+            className="flex items-center gap-1.5 text-xs font-semibold text-slate-100 hover:text-blue-300 transition pr-1"
+          >
+            <Eye className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+            <span>Görünürlük</span>
+          </button>
+        </div>
+      )}
+
+      {isVisibilityOpen && (
+        <div
+          ref={visibilityPanelRef}
+          style={{ left: `${visibilityPos.x}px`, top: `${visibilityPos.y}px` }}
+          className="no-print fixed z-[998] w-52 flex flex-col p-2.5 apple-glass rounded-2xl shadow-[0_16px_48px_rgba(0,0,0,0.55)] border border-white/15 text-white select-none animate-in fade-in duration-150"
+        >
+          {/* Sürüklenebilir Başlık */}
+          <div
+            onPointerDown={handleVisibilityDragStart}
+            className="flex items-center justify-between px-1 py-1 border-b border-white/[0.08] mb-1.5 cursor-grab active:cursor-grabbing touch-none"
+            title="Başlıktan tutup ekranda istediğiniz yere sürükleyin"
+          >
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+              <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <Eye className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
+              <span>Görünürlük</span>
+            </div>
             <button
-              onClick={() => setShowOpacityPopover((prev) => !prev)}
-              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-                showOpacityPopover
-                  ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
-                  : 'text-slate-300 hover:text-white hover:bg-white/10'
-              }`}
-              title="Parsel Dolgu Saydamlığını Değiştir (Saydam / Opak)"
+              type="button"
+              onClick={() => setIsVisibilityOpen(false)}
+              className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+              title="Görünürlük Panelini Gizle"
             >
-              <div className="flex items-center gap-1.5">
-                <Droplets className={`w-3.5 h-3.5 stroke-[2] ${showOpacityPopover ? 'text-slate-950' : 'text-emerald-400'}`} />
-                <span className="text-[11px]">Dolgu Saydamlığı</span>
-              </div>
-              <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded ${
-                showOpacityPopover ? 'bg-slate-950/20 text-slate-950' : 'text-emerald-400 bg-emerald-500/10'
-              }`}>
-                %{mapSettings.parcelFillOpacity ?? 45}
-              </span>
+              <X className="w-3.5 h-3.5" />
             </button>
+          </div>
 
-            {/* Apple-Glass Popover Slider for Fill Opacity */}
-            {showOpacityPopover && (
-              <div className="absolute right-full top-0 mr-2 z-[1100] w-60 apple-glass rounded-2xl p-3 shadow-2xl border border-white/10 text-white space-y-2.5 animate-in fade-in slide-in-from-right-1 duration-150">
-                <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
-                  <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
-                    <Droplets className="w-3.5 h-3.5 text-emerald-400 stroke-[2]" />
-                    <span>Parsel Dolgu Saydamlığı</span>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-emerald-400">
-                    %{mapSettings.parcelFillOpacity ?? 45}
-                  </span>
-                </div>
-
-                <input
-                  type="range"
-                  min={0}
-                  max={85}
-                  value={mapSettings.parcelFillOpacity ?? 45}
-                  onChange={(e) => {
-                    const val = parseInt(e.target.value) || 0;
-                    if (onChangeMapSettings) {
-                      onChangeMapSettings({ ...mapSettings, parcelFillOpacity: val, showFill: val > 0 });
-                    }
-                  }}
-                  className="w-full h-1.5 bg-white/10 rounded-full accent-emerald-500 cursor-pointer"
-                />
-
-                <div className="grid grid-cols-4 gap-1 pt-1">
-                  {[
-                    { label: '%0', val: 0, title: 'Saydam (Sadece Çerçeve)' },
-                    { label: '%25', val: 25, title: 'Hafif' },
-                    { label: '%45', val: 45, title: 'Dengeli' },
-                    { label: '%75', val: 75, title: 'Yoğun' }
-                  ].map((preset) => (
-                    <button
-                      key={preset.val}
-                      onClick={() => {
-                        if (onChangeMapSettings) {
-                          onChangeMapSettings({ ...mapSettings, parcelFillOpacity: preset.val, showFill: preset.val > 0 });
-                        }
-                        setShowOpacityPopover(false);
-                        setIsRightMenuOpen(false);
-                      }}
-                      className={`text-[10px] py-1 rounded-lg font-mono transition border ${
-                        (mapSettings.parcelFillOpacity ?? 45) === preset.val
-                          ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-400 shadow-sm'
-                          : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
+          <div className="space-y-1 max-h-[70vh] overflow-y-auto pr-0.5">
+            {[
+              {
+                key: 'showCadastre',
+                label: 'Balastro (Köşe)',
+                title: 'Parsel Köşe Numaralarını ve Kırık Daire Noktalarını Aç / Kapat',
+                icon: Landmark,
+                activeColor: 'text-cyan-400'
+              },
+              {
+                key: 'showFill',
+                label: 'Dolgu',
+                title: 'Parsel Dolgularını Aç / Kapat',
+                icon: Droplets,
+                activeColor: 'text-emerald-400'
+              },
+              {
+                key: 'showNames',
+                label: 'Parsel No',
+                title: 'Parsel Numaralarını Aç / Kapat',
+                icon: Hash,
+                activeColor: 'text-blue-400'
+              },
+              {
+                key: 'showAreas',
+                label: 'Alan (m²)',
+                title: 'Parsel Alanlarını Aç / Kapat',
+                icon: Maximize2,
+                activeColor: 'text-amber-400'
+              },
+              {
+                key: 'showEdgeLengths',
+                label: 'Kenar (m)',
+                title: 'Kenar Ölçülerini Aç / Kapat',
+                icon: Ruler,
+                activeColor: 'text-purple-400'
+              },
+              {
+                key: 'showSlopeInfo',
+                label: 'Eğim Bilgisi',
+                title: 'Parsel Topoğrafik Eğim ve Kot Farkı Bilgisini Aç / Kapat',
+                icon: Mountain,
+                activeColor: 'text-teal-400'
+              },
+              {
+                key: 'showSoilInfo',
+                label: 'Zemin Bilgisi',
+                title: 'Parsel Jeoteknik Zemin Alan Bilgisini (TBDY 2018) Aç / Kapat',
+                icon: HardHat,
+                activeColor: 'text-amber-400'
+              }
+            ].map((item) => {
+              const isChecked =
+                item.key === 'showCadastre'
+                  ? (mapSettings.showCadastre ?? true)
+                  : item.key === 'showSlopeInfo'
+                  ? (mapSettings.showSlopeInfo ?? true)
+                  : item.key === 'showSoilInfo'
+                  ? (mapSettings.showSoilInfo ?? true)
+                  : !!(mapSettings as any)[item.key];
+              const Icon = item.icon;
+              return (
+                <div key={item.key} className="space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onChangeMapSettings) {
+                        onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
+                      }
+                    }}
+                    className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                      isChecked
+                        ? 'bg-white/15 text-white font-semibold border border-white/10 shadow-sm'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.05]'
+                    }`}
+                    title={item.title}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <Icon className={`w-3.5 h-3.5 stroke-[2] ${isChecked ? item.activeColor : 'text-slate-500'}`} />
+                      <span className="text-[11px]">{item.label}</span>
+                    </div>
+                    <span
+                      className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                        isChecked
+                          ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                          : 'text-slate-500 bg-white/[0.03]'
                       }`}
-                      title={preset.title}
                     >
-                      {preset.label}
-                    </button>
-                  ))}
+                      {isChecked ? 'AÇIK' : 'KAPALI'}
+                    </span>
+                  </button>
+
+                  {/* Dolgu Saydamlığı (Görünürlük İçerisinde) */}
+                  {item.key === 'showFill' && (
+                    <div className="px-2 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.08] space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-[10px] text-slate-300 font-medium flex items-center gap-1">
+                          <Droplets className="w-3 h-3 text-emerald-400" />
+                          <span>Dolgu Saydamlığı</span>
+                        </span>
+                        <span className="text-[10px] font-mono font-bold text-emerald-400">
+                          %{mapSettings.parcelFillOpacity ?? 45}
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={85}
+                        value={mapSettings.parcelFillOpacity ?? 45}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value, 10) || 0;
+                          if (onChangeMapSettings) {
+                            onChangeMapSettings({ ...mapSettings, parcelFillOpacity: val, showFill: val > 0 });
+                          }
+                        }}
+                        className="w-full h-1.5 bg-white/10 rounded-full accent-emerald-500 cursor-pointer"
+                      />
+                      <div className="grid grid-cols-4 gap-1">
+                        {[
+                          { label: '%0', val: 0, title: 'Saydam (Sadece Çerçeve)' },
+                          { label: '%25', val: 25, title: 'Hafif' },
+                          { label: '%45', val: 45, title: 'Dengeli' },
+                          { label: '%75', val: 75, title: 'Yoğun' }
+                        ].map((preset) => (
+                          <button
+                            key={preset.val}
+                            type="button"
+                            onClick={() => {
+                              if (onChangeMapSettings) {
+                                onChangeMapSettings({ ...mapSettings, parcelFillOpacity: preset.val, showFill: preset.val > 0 });
+                              }
+                            }}
+                            className={`text-[9.5px] py-0.5 rounded-md font-mono transition border ${
+                              (mapSettings.parcelFillOpacity ?? 45) === preset.val
+                                ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-400 shadow-sm'
+                                : 'bg-white/[0.04] text-slate-300 hover:text-white border-white/[0.06] hover:bg-white/10'
+                            }`}
+                            title={preset.title}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Kenar Uzunlukları Dinamik Artı / Eksi Boyut Ayarı */}
+                  {item.key === 'showEdgeLengths' && isChecked && (
+                    <div className="flex items-center justify-between gap-1 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
+                      <span className="text-[9.5px] text-slate-400 font-medium">Boyut</span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onChangeMapSettings) {
+                              const cur = mapSettings.edgeLabelScale ?? 100;
+                              onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.max(70, cur - 15) });
+                            }
+                          }}
+                          disabled={(mapSettings.edgeLabelScale ?? 100) <= 70}
+                          className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
+                          title="Kenar uzunluğu yazılarını küçült (-)"
+                        >
+                          -
+                        </button>
+                        <span className="text-[10px] font-mono font-bold text-purple-300 min-w-[34px] text-center">
+                          %{mapSettings.edgeLabelScale ?? 100}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (onChangeMapSettings) {
+                              const cur = mapSettings.edgeLabelScale ?? 100;
+                              onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.min(190, cur + 15) });
+                            }
+                          }}
+                          disabled={(mapSettings.edgeLabelScale ?? 100) >= 190}
+                          className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
+                          title="Kenar uzunluğu yazılarını büyüt (+)"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              );
+            })}
+
+            {/* Öznitelik Bilgileri Butonu */}
+            {onOpenAttributeDrawer && (
+              <button
+                type="button"
+                onClick={() => onOpenAttributeDrawer()}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  isAttributeDrawerOpen
+                    ? 'bg-amber-500 text-slate-950 font-bold border border-amber-400 shadow-md shadow-amber-500/20'
+                    : 'bg-white/[0.08] hover:bg-white/15 text-slate-200 hover:text-white border border-white/10'
+                }`}
+                title="Yüklenen KML/GeoJSON Dosyalarının Öznitelik Bilgileri Tablosunu Aç"
+              >
+                <div className="flex items-center gap-1.5">
+                  <TableProperties className={`w-3.5 h-3.5 stroke-[2] ${isAttributeDrawerOpen ? 'text-slate-950' : 'text-amber-400'}`} />
+                  <span className="text-[11px]">Öznitelikler</span>
+                </div>
+                <span
+                  className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                    isAttributeDrawerOpen
+                      ? 'bg-slate-950/20 text-slate-950'
+                      : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
+                  }`}
+                >
+                  {loadedParcelsCount !== undefined && loadedParcelsCount > 0 ? `${loadedParcelsCount} Parsel` : 'TABLO'}
+                </span>
+              </button>
             )}
           </div>
         </div>
-
-        <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
-
-        {/* Grup 3: Görünürlük Katmanları (Bara Sıralı Sabitlenmiş) */}
-        <div className="space-y-1">
-          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-            <span>Görünürlük</span>
-            <Eye className="w-3.5 h-3.5 text-blue-400" />
-          </div>
-
-          {[
-            {
-              key: 'showCadastre',
-              label: 'Balastro (Köşe)',
-              title: 'Parsel Köşe Numaralarını ve Kırık Daire Noktalarını Aç / Kapat (Parsel Kapanmaz)',
-              icon: Landmark,
-              activeColor: 'text-cyan-400'
-            },
-            {
-              key: 'showFill',
-              label: 'Dolgu',
-              title: 'Parsel Dolgularını Aç / Kapat',
-              icon: Droplets,
-              activeColor: 'text-emerald-400'
-            },
-            {
-              key: 'showNames',
-              label: 'Parsel No',
-              title: 'Parsel Numaralarını Aç / Kapat',
-              icon: Hash,
-              activeColor: 'text-blue-400'
-            },
-            {
-              key: 'showAreas',
-              label: 'Alan (m²)',
-              title: 'Parsel Alanlarını Aç / Kapat',
-              icon: Maximize2,
-              activeColor: 'text-amber-400'
-            },
-            {
-              key: 'showEdgeLengths',
-              label: 'Kenar (m)',
-              title: 'Kenar Ölçülerini Aç / Kapat',
-              icon: Ruler,
-              activeColor: 'text-purple-400'
-            },
-            {
-              key: 'showSlopeInfo',
-              label: 'Eğim Bilgisi',
-              title: 'Parsel Topoğrafik Eğim ve Kot Farkı Bilgisini Aç / Kapat',
-              icon: Mountain,
-              activeColor: 'text-teal-400'
-            },
-            {
-              key: 'showSoilInfo',
-              label: 'Zemin Bilgisi',
-              title: 'Parsel Jeoteknik Zemin Alan Bilgisini (TBDY 2018) Aç / Kapat',
-              icon: HardHat,
-              activeColor: 'text-amber-400'
-            }
-          ].map((item) => {
-            const isChecked =
-              item.key === 'showCadastre'
-                ? (mapSettings.showCadastre ?? true)
-                : item.key === 'showSlopeInfo'
-                ? (mapSettings.showSlopeInfo ?? true)
-                : item.key === 'showSoilInfo'
-                ? (mapSettings.showSoilInfo ?? true)
-                : !!(mapSettings as any)[item.key];
-            const Icon = item.icon;
-            return (
-              <div key={item.key} className="space-y-1">
-                <button
-                  onClick={() => {
-                    if (onChangeMapSettings) {
-                      onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
-                    }
-                    setIsRightMenuOpen(false);
-                  }}
-                  className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-                    isChecked
-                      ? 'bg-white/15 text-white font-semibold border border-white/10 shadow-sm'
-                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.05]'
-                  }`}
-                  title={item.title}
-                >
-                  <div className="flex items-center gap-1.5">
-                    <Icon className={`w-3.5 h-3.5 stroke-[2] ${isChecked ? item.activeColor : 'text-slate-500'}`} />
-                    <span className="text-[11px]">{item.label}</span>
-                  </div>
-                  <span
-                    className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
-                      isChecked
-                        ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                        : 'text-slate-500 bg-white/[0.03]'
-                    }`}
-                  >
-                    {isChecked ? 'AÇIK' : 'KAPALI'}
-                  </span>
-                </button>
-
-                {item.key === 'showEdgeLengths' && isChecked && (
-                  <div className="flex items-center justify-between gap-1 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
-                    <span className="text-[9.5px] text-slate-400 font-medium">Boyut</span>
-                    <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onChangeMapSettings) {
-                            const cur = mapSettings.edgeLabelScale ?? 100;
-                            onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.max(70, cur - 15) });
-                          }
-                        }}
-                        disabled={(mapSettings.edgeLabelScale ?? 100) <= 70}
-                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
-                        title="Kenar uzunluğu yazılarını küçült (-)"
-                      >
-                        -
-                      </button>
-                      <span className="text-[10px] font-mono font-bold text-purple-300 min-w-[34px] text-center">
-                        %{mapSettings.edgeLabelScale ?? 100}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          if (onChangeMapSettings) {
-                            const cur = mapSettings.edgeLabelScale ?? 100;
-                            onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.min(190, cur + 15) });
-                          }
-                        }}
-                        disabled={(mapSettings.edgeLabelScale ?? 100) >= 190}
-                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
-                        title="Kenar uzunluğu yazılarını büyüt (+)"
-                      >
-                        +
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* Öznitelik Bilgileri Butonu */}
-          {onOpenAttributeDrawer && (
-            <button
-              onClick={() => {
-                onOpenAttributeDrawer();
-                setIsRightMenuOpen(false);
-              }}
-              className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-                isAttributeDrawerOpen
-                  ? 'bg-amber-500 text-slate-950 font-bold border border-amber-400 shadow-md shadow-amber-500/20'
-                  : 'bg-white/[0.08] hover:bg-white/15 text-slate-200 hover:text-white border border-white/10'
-              }`}
-              title="Yüklenen KML/GeoJSON Dosyalarının Öznitelik Bilgileri Tablosunu Aç"
-            >
-              <div className="flex items-center gap-1.5">
-                <TableProperties className={`w-3.5 h-3.5 stroke-[2] ${isAttributeDrawerOpen ? 'text-slate-950' : 'text-amber-400'}`} />
-                <span className="text-[11px]">Öznitelikler</span>
-              </div>
-              <span
-                className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
-                  isAttributeDrawerOpen
-                    ? 'bg-slate-950/20 text-slate-950'
-                    : 'text-amber-300 bg-amber-500/15 border border-amber-500/30'
-                }`}
-              >
-                {loadedParcelsCount !== undefined && loadedParcelsCount > 0 ? `${loadedParcelsCount} Parsel` : 'TABLO'}
-              </span>
-            </button>
-          )}
-        </div>
-      </div>
       )}
 
       {/* Aktif Çizim / Silme Bilgilendirme ve Dinamik Ölçü HUD Rozeti */}

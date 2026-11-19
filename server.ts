@@ -123,6 +123,283 @@ Resmi belediye ve kamu kaynaklarını kullanarak güncel, net ve Türkçe bir ö
   }
 });
 
+// ==================== TKGM PARSEL SORGU PROXY & CACHE ====================
+interface TkgmAdminItem {
+  id: number;
+  name: string;
+}
+
+const tkgmListCache = new Map<string, { items: TkgmAdminItem[]; source: string; expiresAt: number }>();
+const TKGM_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+const TKGM_BROWSER_HEADERS: Record<string, string> = {
+  Accept: 'application/json, text/plain, */*',
+  'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7',
+  Origin: 'https://parselsorgu.tkgm.gov.tr',
+  Referer: 'https://parselsorgu.tkgm.gov.tr/',
+  'User-Agent':
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+};
+
+async function fetchJsonWithTimeout(
+  url: string,
+  timeoutMs: number,
+  manualRedirect = false
+): Promise<{ ok: boolean; status: number; data: any }> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: TKGM_BROWSER_HEADERS,
+      redirect: manualRedirect ? 'manual' : 'follow',
+      signal: controller.signal,
+    });
+
+    if (response.status >= 300 && response.status < 400) {
+      return { ok: false, status: response.status, data: null };
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    const text = await response.text();
+    if (!text || (!contentType.includes('json') && !text.trim().startsWith('{') && !text.trim().startsWith('['))) {
+      return { ok: false, status: response.status, data: null };
+    }
+
+    const data = JSON.parse(text);
+    return { ok: response.ok, status: response.status, data };
+  } catch {
+    return { ok: false, status: 504, data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchTkgmWithFallback(
+  primaryPath: string,
+  fallbackPath: string
+): Promise<{ ok: boolean; status: number; data: any; source: string }> {
+  const primaryUrl = `https://parselsorgu.tkgm.gov.tr/api/${primaryPath}`;
+  const primaryRes = await fetchJsonWithTimeout(primaryUrl, 2200, true);
+  if (primaryRes.ok && primaryRes.data) {
+    return { ...primaryRes, source: 'parselsorgu.tkgm.gov.tr' };
+  }
+
+  const fallbackUrl = `https://cbsapi.tkgm.gov.tr/megsiswebapi.v3/api/${fallbackPath}`;
+  const fallbackRes = await fetchJsonWithTimeout(fallbackUrl, 12000, false);
+  return { ...fallbackRes, source: 'cbsapi.tkgm.gov.tr' };
+}
+
+function normalizeAdminList(raw: any): TkgmAdminItem[] {
+  let rows: any[] = [];
+  if (Array.isArray(raw)) {
+    rows = raw;
+  } else if (raw && Array.isArray(raw.features)) {
+    rows = raw.features.map((f: any) => f?.properties || f);
+  } else if (raw && Array.isArray(raw.data)) {
+    rows = raw.data;
+  }
+
+  const seen = new Set<number>();
+  const items: TkgmAdminItem[] = [];
+  for (const row of rows) {
+    if (!row) continue;
+    const rawId = row.id ?? row.ilId ?? row.ilceId ?? row.mahalleId ?? row.kod ?? row.value;
+    const id = typeof rawId === 'number' ? rawId : parseInt(String(rawId ?? ''), 10);
+    const name = String(row.text ?? row.ad ?? row.name ?? row.title ?? '').trim();
+    if (!Number.isNaN(id) && name && !seen.has(id)) {
+      seen.add(id);
+      items.push({ id, name });
+    }
+  }
+
+  return items.sort((a, b) => a.name.localeCompare(b.name, 'tr'));
+}
+
+// 1. İl Listesi
+app.get('/api/tkgm/il', async (_req, res) => {
+  const cacheKey = 'il_list';
+  const cached = tkgmListCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({ success: true, items: cached.items, source: cached.source, cached: true });
+  }
+
+  const result = await fetchTkgmWithFallback('il', 'idariYapi/ilListe');
+  if (!result.ok || !result.data) {
+    return res.status(502).json({
+      success: false,
+      error: 'TKGM İl listesi alınamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.',
+    });
+  }
+
+  const items = normalizeAdminList(result.data);
+  if (items.length === 0) {
+    return res.status(502).json({
+      success: false,
+      error: 'TKGM İl listesi boş döndü.',
+    });
+  }
+
+  tkgmListCache.set(cacheKey, { items, source: result.source, expiresAt: Date.now() + TKGM_CACHE_TTL_MS });
+  return res.json({ success: true, items, source: result.source });
+});
+
+// 2. İlçe Listesi
+app.get('/api/tkgm/il/:ilId/ilce', async (req, res) => {
+  const ilId = String(req.params.ilId || '').replace(/[^\d]/g, '');
+  if (!ilId) {
+    return res.status(400).json({ success: false, error: 'Geçersiz İl ID.' });
+  }
+
+  const cacheKey = `ilce_${ilId}`;
+  const cached = tkgmListCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({ success: true, items: cached.items, source: cached.source, cached: true });
+  }
+
+  const result = await fetchTkgmWithFallback(`il/${ilId}/ilce`, `idariYapi/ilceListe/${ilId}`);
+  if (!result.ok || !result.data) {
+    return res.status(502).json({
+      success: false,
+      error: 'TKGM İlçe listesi alınamadı.',
+    });
+  }
+
+  const items = normalizeAdminList(result.data);
+  tkgmListCache.set(cacheKey, { items, source: result.source, expiresAt: Date.now() + TKGM_CACHE_TTL_MS });
+  return res.json({ success: true, items, source: result.source });
+});
+
+// 3. Mahalle Listesi
+app.get('/api/tkgm/ilce/:ilceId/mahalle', async (req, res) => {
+  const ilceId = String(req.params.ilceId || '').replace(/[^\d]/g, '');
+  if (!ilceId) {
+    return res.status(400).json({ success: false, error: 'Geçersiz İlçe ID.' });
+  }
+
+  const cacheKey = `mahalle_${ilceId}`;
+  const cached = tkgmListCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json({ success: true, items: cached.items, source: cached.source, cached: true });
+  }
+
+  const result = await fetchTkgmWithFallback(`ilce/${ilceId}/mahalle`, `idariYapi/mahalleListe/${ilceId}`);
+  if (!result.ok || !result.data) {
+    return res.status(502).json({
+      success: false,
+      error: 'TKGM Mahalle listesi alınamadı.',
+    });
+  }
+
+  const items = normalizeAdminList(result.data);
+  tkgmListCache.set(cacheKey, { items, source: result.source, expiresAt: Date.now() + TKGM_CACHE_TTL_MS });
+  return res.json({ success: true, items, source: result.source });
+});
+
+// 4. Parsel Detay & GeoJSON
+app.get('/api/tkgm/parsel/:mahalleId/:adaNo/:parselNo', async (req, res) => {
+  const mahalleId = String(req.params.mahalleId || '').replace(/[^\d]/g, '');
+  const adaNo = encodeURIComponent(String(req.params.adaNo ?? '0').trim() || '0');
+  const parselNo = encodeURIComponent(String(req.params.parselNo ?? '').trim());
+
+  if (!mahalleId || !parselNo) {
+    return res.status(400).json({
+      success: false,
+      error: 'Mahalle ve Parsel numarası zorunludur.',
+    });
+  }
+
+  const result = await fetchTkgmWithFallback(
+    `parsel/${mahalleId}/${adaNo}/${parselNo}`,
+    `parsel/${mahalleId}/${adaNo}/${parselNo}`
+  );
+
+  if (result.status === 404) {
+    const tkgmMsg = result.data?.Message || result.data?.message;
+    return res.status(404).json({
+      success: false,
+      error: tkgmMsg || `Belirtilen Ada (${decodeURIComponent(adaNo)}) / Parsel (${decodeURIComponent(parselNo)}) bulunamadı.`,
+    });
+  }
+
+  if (!result.ok || !result.data) {
+    return res.status(result.status >= 400 ? result.status : 502).json({
+      success: false,
+      error: result.data?.Message || result.data?.message || 'TKGM parsel sorgusu başarısız oldu.',
+    });
+  }
+
+  const feature =
+    result.data.type === 'FeatureCollection' && Array.isArray(result.data.features)
+      ? result.data.features[0]
+      : result.data;
+
+  if (!feature || !feature.geometry) {
+    return res.status(404).json({
+      success: false,
+      error: 'TKGM yanıtında geçerli parsel geometrisi bulunamadı.',
+    });
+  }
+
+  return res.json({
+    success: true,
+    feature,
+    properties: feature.properties || {},
+    source: result.source,
+  });
+});
+
+// 5. Harita Koordinatından Parsel Sorgu (Enlem / Boylam)
+app.get('/api/tkgm/parsel/:lat/:lng', async (req, res) => {
+  const lat = parseFloat(String(req.params.lat || '').replace(',', '.'));
+  const lng = parseFloat(String(req.params.lng || '').replace(',', '.'));
+
+  if (Number.isNaN(lat) || Number.isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+    return res.status(400).json({
+      success: false,
+      error: 'Geçersiz harita koordinatı (Enlem / Boylam).',
+    });
+  }
+
+  const latStr = lat.toFixed(7);
+  const lngStr = lng.toFixed(7);
+  const result = await fetchTkgmWithFallback(`parsel/${latStr}/${lngStr}`, `parsel/${latStr}/${lngStr}`);
+
+  if (result.status === 404) {
+    const tkgmMsg = result.data?.Message || result.data?.message;
+    return res.status(404).json({
+      success: false,
+      error: tkgmMsg || `Tıklanan konumda (${lat.toFixed(5)}, ${lng.toFixed(5)}) kayıtlı TKGM parseli bulunamadı.`,
+    });
+  }
+
+  if (!result.ok || !result.data) {
+    return res.status(result.status >= 400 ? result.status : 502).json({
+      success: false,
+      error: result.data?.Message || result.data?.message || 'Harita konumundan TKGM parsel sorgusu başarısız oldu.',
+    });
+  }
+
+  const feature =
+    result.data.type === 'FeatureCollection' && Array.isArray(result.data.features)
+      ? result.data.features[0]
+      : result.data;
+
+  if (!feature || !feature.geometry) {
+    return res.status(404).json({
+      success: false,
+      error: 'Tıklanan konum için geçerli parsel geometrisi bulunamadı.',
+    });
+  }
+
+  return res.json({
+    success: true,
+    feature,
+    properties: feature.properties || {},
+    source: result.source,
+  });
+});
+
 // Start dev server with Vite middlewares
 async function startServer() {
   const isProd = process.env.NODE_ENV === 'production';

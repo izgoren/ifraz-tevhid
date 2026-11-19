@@ -40,7 +40,8 @@ import {
   HardHat,
   Eye,
   Crosshair,
-  RotateCw
+  RotateCw,
+  Landmark
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -89,6 +90,8 @@ interface ControlPanelProps {
   onToggleAdjustCutAngle?: () => void;
   isVertexEditActive?: boolean;
   onToggleVertexEdit?: () => void;
+  isTkgmBarOpen?: boolean;
+  onToggleTkgmBar?: () => void;
 }
 
 const BASEMAP_OPTIONS = [
@@ -144,7 +147,9 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   isAdjustingCutAngle = false,
   onToggleAdjustCutAngle,
   isVertexEditActive = false,
-  onToggleVertexEdit
+  onToggleVertexEdit,
+  isTkgmBarOpen = false,
+  onToggleTkgmBar
 }) => {
   const [panelOpen, setPanelOpen] = useState(true);
   const [showSaveAsMenu, setShowSaveAsMenu] = useState(false);
@@ -301,6 +306,22 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         </div>
 
         <div className="h-3.5 w-px bg-white/15 mx-0.5" />
+
+        {/* TKGM Parsel Sorgu Barı Aç/Kapat */}
+        {onToggleTkgmBar && (
+          <button
+            onClick={onToggleTkgmBar}
+            className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
+              isTkgmBarOpen
+                ? 'bg-emerald-500 text-slate-950 font-bold border-emerald-300 shadow-[0_2px_12px_rgba(16,185,129,0.4)]'
+                : 'bg-white/10 hover:bg-white/15 text-emerald-300 hover:text-white border-white/10'
+            }`}
+            title="TKGM Parsel Sorgu Barını Aç/Kapat (İl, İlçe, Mahalle, Ada, Parsel)"
+          >
+            <Landmark className={`w-3.5 h-3.5 stroke-[2] ${isTkgmBarOpen ? 'text-slate-950' : 'text-emerald-400'}`} />
+            <span>TKGM Sorgu</span>
+          </button>
+        )}
 
         {/* Hızlı Yazdır Butonu */}
         {onOpenPrintModal && (
