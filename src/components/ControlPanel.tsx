@@ -38,7 +38,9 @@ import {
   ZoomIn,
   ZoomOut,
   HardHat,
-  Eye
+  Eye,
+  Crosshair,
+  RotateCw
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -83,6 +85,10 @@ interface ControlPanelProps {
   isSettingsSaved?: boolean;
   isDrawingPolygon?: boolean;
   onToggleDrawPolygon?: () => void;
+  isAdjustingCutAngle?: boolean;
+  onToggleAdjustCutAngle?: () => void;
+  isVertexEditActive?: boolean;
+  onToggleVertexEdit?: () => void;
 }
 
 const BASEMAP_OPTIONS = [
@@ -134,7 +140,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onResetSettings,
   isSettingsSaved = false,
   isDrawingPolygon = false,
-  onToggleDrawPolygon
+  onToggleDrawPolygon,
+  isAdjustingCutAngle = false,
+  onToggleAdjustCutAngle,
+  isVertexEditActive = false,
+  onToggleVertexEdit
 }) => {
   const [panelOpen, setPanelOpen] = useState(true);
   const [showSaveAsMenu, setShowSaveAsMenu] = useState(false);
@@ -915,15 +925,48 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
               {/* Kesim Açısı Popover */}
               {showAnglePopover && (
-                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                <div className="absolute left-full top-0 ml-2 z-[1100] w-68 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
                   <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
                     <span className="text-xs font-semibold text-slate-200">İfraz Kesim Açısı</span>
-                    <span className="text-xs font-mono font-bold text-amber-400">{config.rotateAngle}°</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleConfigChange('rotateAngle', Math.max(0, Math.round(((config.rotateAngle || 0) - 1) * 10) / 10))}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 text-xs flex items-center justify-center text-slate-300 hover:text-white transition"
+                        title="1° Azalt"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={0}
+                        max={180}
+                        step={0.5}
+                        value={config.rotateAngle}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') setShowAnglePopover(false);
+                        }}
+                        onChange={(e) => {
+                          const val = parseFloat(e.target.value);
+                          handleConfigChange('rotateAngle', Number.isNaN(val) ? 0 : Math.max(0, Math.min(180, Math.round(val * 10) / 10)));
+                        }}
+                        className="w-14 h-6 px-1 text-center bg-black/40 border border-white/20 rounded font-mono font-bold text-xs text-amber-400 focus:outline-none focus:border-amber-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleConfigChange('rotateAngle', Math.min(180, Math.round(((config.rotateAngle || 0) + 1) * 10) / 10))}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 text-xs flex items-center justify-center text-slate-300 hover:text-white transition"
+                        title="1° Arttır"
+                      >
+                        +
+                      </button>
+                    </div>
                   </div>
                   <input
                     type="range"
                     min={0}
                     max={180}
+                    step={0.5}
                     value={config.rotateAngle}
                     onChange={(e) => handleConfigChange('rotateAngle', parseFloat(e.target.value) || 0)}
                     className="w-full h-1.5 bg-white/10 rounded-full accent-amber-500 cursor-pointer"
@@ -946,9 +989,54 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                       </button>
                     ))}
                   </div>
+                  {onToggleAdjustCutAngle && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onToggleAdjustCutAngle();
+                        setShowAnglePopover(false);
+                        setPanelOpen(false);
+                      }}
+                      className={`w-full py-1.5 px-2.5 rounded-xl text-[11px] font-semibold transition flex items-center justify-center gap-1.5 border ${
+                        isAdjustingCutAngle
+                          ? 'bg-amber-500 text-slate-950 border-amber-300'
+                          : 'bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border-amber-500/30'
+                      }`}
+                    >
+                      <RotateCw className="w-3.5 h-3.5" />
+                      <span>{isAdjustingCutAngle ? 'Harita Açı Tutamacını Kapat' : 'Haritada Açıyı Elle Döndür'}</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
+
+            {/* Elle Köşe Düzelt Butonu */}
+            {onToggleVertexEdit && (
+              <button
+                type="button"
+                onClick={() => {
+                  onToggleVertexEdit();
+                  setPanelOpen(false);
+                }}
+                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  isVertexEditActive
+                    ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Harita üzerinde parsel köşelerini sürükleyerek elle düzeltin (Ana parsel ve ifraz parselleri)"
+              >
+                <div className="flex items-center gap-1.5">
+                  <Crosshair className={`w-3.5 h-3.5 stroke-[2] ${isVertexEditActive ? 'text-slate-950' : 'text-emerald-400'}`} />
+                  <span className="text-[11px]">Elle Köşe Düzelt</span>
+                </div>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                  isVertexEditActive ? 'bg-emerald-800 text-white' : 'text-emerald-300 bg-emerald-500/10'
+                }`}>
+                  {isVertexEditActive ? 'AÇIK' : 'DÜZELT'}
+                </span>
+              </button>
+            )}
 
             {/* Çift Sıra İfraz Butonu & Popover */}
             <div className="relative">

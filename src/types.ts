@@ -153,6 +153,7 @@ export interface MapSettings {
   showNames: boolean;
   showAreas: boolean;
   showEdgeLengths: boolean;
+  edgeLabelScale?: number; // 70 - 190 (%) kenar uzunlukları yazı ve kutu boyutu ölçeği
   showCadastre?: boolean; // Balastro / Kadastro parsel sınırları görünürlüğü
   showSlopeInfo?: boolean; // Eğim ve topoğrafik yükseklik bilgisi görünürlüğü
   showSoilInfo?: boolean; // Zemin türü ve taşıma gücü bilgisi görünürlüğü

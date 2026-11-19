@@ -84,6 +84,7 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   showNames: true,
   showAreas: true,
   showEdgeLengths: true,
+  edgeLabelScale: 100,
   showCadastre: true,
   showSlopeInfo: true,
   showSoilInfo: true,
@@ -161,6 +162,9 @@ export default function App() {
 
   // Active Map Drawing Tool (polygon/line/delete)
   const [activeDrawTool, setActiveDrawTool] = useState<'polygon' | 'line' | 'delete' | null>(null);
+
+  // Interactive Cut Angle Adjustment Mode on Map
+  const [isAdjustingCutAngle, setIsAdjustingCutAngle] = useState<boolean>(false);
 
   // Pending Drawn Polygon for Naming & Additional Parcel Placement
   const [pendingDrawnPolygon, setPendingDrawnPolygon] = useState<ParcelGeometry | null>(null);
@@ -436,6 +440,88 @@ export default function App() {
       setStatusMessage(`CAD Düzenleme: Parsel köşeleri güncellendi (${newAreaM2.toFixed(1)} m²).`);
     },
     [config, roadLines, pushUndoState]
+  );
+
+  // CAD Mode: Batch Vertex Update (Shared vertices across multiple parcels in one undo step)
+  const handleBatchParcelGeometryUpdated = useCallback(
+    (updates: Array<{ parcelId: string; updatedFeature: ParcelGeometry }>) => {
+      if (!updates || updates.length === 0) return;
+      pushUndoState('CAD Ortak Köşe Düzenlemesi');
+      isCadDirtyRef.current = true;
+
+      let lastArea = 0;
+      setParcels((prev) =>
+        prev.map((p) => {
+          const match = updates.find((u) => u.parcelId === p.id);
+          if (!match) return p;
+          const newAreaM2 = Math.round(turf.area(match.updatedFeature) * 10) / 10;
+          lastArea = newAreaM2;
+          const { isValid, frontageM, depthM, rearWidthM, reasons } = validateParcel(
+            match.updatedFeature,
+            newAreaM2,
+            config,
+            roadLines
+          );
+          const hasNote = p.notes && p.notes.includes('CAD Köşe Düzeltmesi');
+          return {
+            ...p,
+            feature: match.updatedFeature,
+            areaM2: newAreaM2,
+            frontageM,
+            rearWidthM,
+            depthM,
+            isValid,
+            validationReasons: reasons,
+            notes: hasNote ? p.notes : (p.notes ? p.notes + ' | ' : '') + 'CAD Köşe Düzeltmesi Yapıldı'
+          };
+        })
+      );
+
+      setStatusMessage(
+        updates.length > 1
+          ? `CAD Düzenleme: ${updates.length} parselin ortak köşesi dinamik hat üzerinde güncellendi.`
+          : `CAD Düzenleme: Parsel köşeleri güncellendi (${lastArea.toFixed(1)} m²).`
+      );
+    },
+    [config, roadLines, pushUndoState]
+  );
+
+  // CAD Mode: Handle Root / Main Polygon Vertex Updates
+  const handleMainPolygonUpdated = useCallback(
+    (updatedFeature: ParcelGeometry) => {
+      pushUndoState('Ana Parsel Köşe Düzeltmesi');
+      const newAreaM2 = Math.round(turf.area(updatedFeature) * 10) / 10;
+      const topo = calculateParcelTopography(updatedFeature);
+      const soil = estimateSoilClassification(updatedFeature, topo, cadastralInfo);
+
+      setMainPolygon(updatedFeature);
+      setCadastralInfo((prev) => ({
+        ...prev,
+        tapuAlaniM2: newAreaM2
+      }));
+
+      if (activeParcelId) {
+        setLoadedFiles((prev) =>
+          prev.map((f) => ({
+            ...f,
+            parcels: f.parcels.map((p) =>
+              p.id === activeParcelId
+                ? {
+                    ...p,
+                    geometry: updatedFeature,
+                    areaM2: newAreaM2,
+                    topography: topo,
+                    soilClassification: soil
+                  }
+                : p
+            )
+          }))
+        );
+      }
+
+      setStatusMessage(`Ana parsel köşeleri düzeltildi (${newAreaM2.toFixed(1)} m²).`);
+    },
+    [cadastralInfo, activeParcelId, pushUndoState]
   );
 
   // CAD Mode: Handle Slicing Parcel with Drawn Line
@@ -1190,52 +1276,61 @@ export default function App() {
       }}
     >
       {/* Map Element */}
-      <MapContainer
-        mainPolygon={mainPolygon}
-        parcels={parcels}
-        roadLines={roadLines}
-        mapSettings={mapSettings}
-        onChangeMapSettings={setMapSettings}
-        axisConfig={{
-          isDoubleRow: config.isDoubleRow,
-          axisPosition: config.axisPosition,
-          angle: config.isSplitAngles ? config.leftAngle : config.commonAngle
-        }}
-        selectedParcelIds={selectedParcelIds}
-        onParcelSelectToggle={handleParcelSelectToggle}
-        onDragMerge={handleDragMerge}
-        onPolygonCreated={handlePolygonCreated}
-        onRoadLineCreated={(line) => setRoadLines((prev) => [...prev, line])}
-        onParcelGeometryUpdated={handleParcelGeometryUpdated}
-        onParcelSliced={handleParcelSliced}
-        onToggleCadMode={(active) => setMapSettings((prev) => ({ ...prev, cadModeActive: active }))}
-        onChangeCadTool={(tool) => setMapSettings((prev) => ({ ...prev, cadActiveTool: tool }))}
-        isSelectingFrontageEdge={isSelectingFrontageEdge}
-        edgeSelectionMode={edgeSelectionMode}
-        selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
-        westEdgeIndex={config.westEdgeIndex}
-        eastEdgeIndex={config.eastEdgeIndex}
-        leftSideEdgeIndex={config.leftSideEdgeIndex}
-        rightSideEdgeIndex={config.rightSideEdgeIndex}
-        onToggleFrontageEdge={handleToggleFrontageEdge}
-        onSelectEdgeForMode={handleSelectEdgeForMode}
-        onDoneSelectingFrontage={() => {
-          setIsSelectingFrontageEdge(false);
-          setEdgeSelectionMode('none');
-        }}
-        onToggleDragMerge={handleToggleDragMerge}
-        onOpenAttributeDrawer={() => setIsAttributeDrawerOpen(true)}
-        loadedParcelsCount={allLoadedParcels.length}
-        isAttributeDrawerOpen={isAttributeDrawerOpen}
-        secondaryParcels={secondaryParcels}
-        onSelectActiveParcel={handleSelectActiveParcel}
-        onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
-        externalDrawTool={activeDrawTool}
-        onActiveDrawToolChange={setActiveDrawTool}
-      />
+      <div className={`w-full h-full ${isPrintModalOpen ? 'no-print' : ''}`}>
+        <MapContainer
+          mainPolygon={mainPolygon}
+          parcels={parcels}
+          roadLines={roadLines}
+          mapSettings={mapSettings}
+          onChangeMapSettings={setMapSettings}
+          axisConfig={{
+            isDoubleRow: config.isDoubleRow,
+            axisPosition: config.axisPosition,
+            angle: config.isSplitAngles ? config.leftAngle : config.commonAngle
+          }}
+          selectedParcelIds={selectedParcelIds}
+          onParcelSelectToggle={handleParcelSelectToggle}
+          onDragMerge={handleDragMerge}
+          onPolygonCreated={handlePolygonCreated}
+          onRoadLineCreated={(line) => setRoadLines((prev) => [...prev, line])}
+          onParcelGeometryUpdated={handleParcelGeometryUpdated}
+          onBatchParcelGeometryUpdated={handleBatchParcelGeometryUpdated}
+          onMainPolygonUpdated={handleMainPolygonUpdated}
+          onParcelSliced={handleParcelSliced}
+          onToggleCadMode={(active) => setMapSettings((prev) => ({ ...prev, cadModeActive: active }))}
+          onChangeCadTool={(tool) => setMapSettings((prev) => ({ ...prev, cadActiveTool: tool }))}
+          cutAngle={config.rotateAngle}
+          isAdjustingCutAngle={isAdjustingCutAngle}
+          onToggleAdjustCutAngle={() => setIsAdjustingCutAngle((prev) => !prev)}
+          onChangeCutAngle={(deg) => setConfig((prev) => ({ ...prev, rotateAngle: deg }))}
+          isSelectingFrontageEdge={isSelectingFrontageEdge}
+          edgeSelectionMode={edgeSelectionMode}
+          selectedFrontageEdgeIndices={selectedFrontageEdgeIndices}
+          westEdgeIndex={config.westEdgeIndex}
+          eastEdgeIndex={config.eastEdgeIndex}
+          leftSideEdgeIndex={config.leftSideEdgeIndex}
+          rightSideEdgeIndex={config.rightSideEdgeIndex}
+          onToggleFrontageEdge={handleToggleFrontageEdge}
+          onSelectEdgeForMode={handleSelectEdgeForMode}
+          onDoneSelectingFrontage={() => {
+            setIsSelectingFrontageEdge(false);
+            setEdgeSelectionMode('none');
+          }}
+          onToggleDragMerge={handleToggleDragMerge}
+          onOpenAttributeDrawer={() => setIsAttributeDrawerOpen(true)}
+          loadedParcelsCount={allLoadedParcels.length}
+          isAttributeDrawerOpen={isAttributeDrawerOpen}
+          secondaryParcels={secondaryParcels}
+          onSelectActiveParcel={handleSelectActiveParcel}
+          onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
+          externalDrawTool={activeDrawTool}
+          onActiveDrawToolChange={setActiveDrawTool}
+        />
+      </div>
 
       {/* Floating Control Panel */}
-      <ControlPanel
+      <div className="no-print">
+        <ControlPanel
         config={config}
         onChangeConfig={setConfig}
         mapSettings={mapSettings}
@@ -1279,7 +1374,38 @@ export default function App() {
               : 'Elle Parsel Alanı Çizimi Aktif: Harita üzerinde köşe noktalarını tıklayarak parselinizi oluşturun. Bitirmek için çift tıklayın veya ilk noktaya tıklayın.'
           );
         }}
-      />
+        isAdjustingCutAngle={isAdjustingCutAngle}
+        onToggleAdjustCutAngle={() => {
+          setIsAdjustingCutAngle((prev) => {
+            const next = !prev;
+            setStatusMessage(
+              next
+                ? 'Haritada Kesim Açısı Döndürme Aktif: Eksen tutamaçlarını sürükleyerek kesim açısını elle ayarlayın.'
+                : 'Kesim açısı döndürme modu kapatıldı.'
+            );
+            return next;
+          });
+        }}
+        isVertexEditActive={mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'}
+        onToggleVertexEdit={() => {
+          setActiveDrawTool(null);
+          setMapSettings((prev) => {
+            const isCurrentlyVertex = prev.cadModeActive && prev.cadActiveTool === 'vertex';
+            const nextActive = !isCurrentlyVertex;
+            setStatusMessage(
+              nextActive
+                ? 'Elle Köşe Düzeltme Aktif: Köşeleri kenar, kesim ekseni veya sınır hatları boyunca sürükleyerek düzeltin.'
+                : 'Elle köşe düzeltme modu kapatıldı.'
+            );
+            return {
+              ...prev,
+              cadModeActive: nextActive,
+              cadActiveTool: 'vertex'
+            };
+          });
+        }}
+        />
+      </div>
 
       {/* Official Cadastral Print / PDF Report Modal */}
       <PrintReportModal
@@ -1347,7 +1473,7 @@ export default function App() {
       />
 
       {/* Dynamic Status / Bilgi Barı (Alt Ekran Apple-Glass Dinamik Ada) */}
-      <div className="fixed bottom-5 left-1/2 -translate-x-1/2 z-[990] max-w-[94vw] md:max-w-2xl px-4 py-2 apple-glass rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/15 text-slate-200 text-xs flex items-center gap-2.5 pointer-events-auto backdrop-blur-2xl transition-all duration-300 select-none">
+      <div className="no-print fixed bottom-5 left-1/2 -translate-x-1/2 z-[990] max-w-[94vw] md:max-w-2xl px-4 py-2 apple-glass rounded-full shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/15 text-slate-200 text-xs flex items-center gap-2.5 pointer-events-auto backdrop-blur-2xl transition-all duration-300 select-none">
         <span className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.9)] animate-pulse shrink-0" />
         
         {/* Kadastro Konum Çipi (İl, İlçe, Mahalle, Ada, Parsel) */}
@@ -1377,7 +1503,9 @@ export default function App() {
       </div>
 
       {/* PWA Offline Mode Indicator */}
-      <OfflineIndicator />
+      <div className="no-print">
+        <OfflineIndicator />
+      </div>
     </div>
   );
 }

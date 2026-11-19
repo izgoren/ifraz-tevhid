@@ -30,8 +30,32 @@ import {
   TableProperties,
   Landmark,
   Mountain,
-  HardHat
+  HardHat,
+  RotateCw,
+  Copy,
+  Magnet,
+  Link2
 } from 'lucide-react';
+import {
+  CoordinateSystemId,
+  formatCoordinateInSystem,
+  getAutoTurefDom,
+  getCoordinateSystemDisplayName,
+  getTurefTm3Epsg,
+  getUtmZoneInfo,
+  TURKEY_TM3_DOMS
+} from '../utils/coordinateSystems';
+import {
+  DynamicLineMode,
+  DynamicGuideLine,
+  extractEditableVertices,
+  buildUpdatedParcelGeometry,
+  hasSelfIntersection,
+  extractBoundarySegments,
+  buildDynamicGuideLines,
+  snapVertexToDynamicLines,
+  getMeterToleranceForPixels
+} from '../utils/dynamicSnap';
 
 interface MapContainerProps {
   mainPolygon: ParcelGeometry | null;
@@ -45,9 +69,15 @@ interface MapContainerProps {
   onPolygonCreated: (poly: ParcelGeometry) => void;
   onRoadLineCreated?: (line: Feature<LineString>) => void;
   onParcelGeometryUpdated?: (parcelId: string, updatedFeature: ParcelGeometry) => void;
+  onBatchParcelGeometryUpdated?: (updates: Array<{ parcelId: string; updatedFeature: ParcelGeometry }>) => void;
+  onMainPolygonUpdated?: (updatedFeature: ParcelGeometry) => void;
   onParcelSliced?: (parcelId: string, sliceLine: Feature<LineString>) => void;
   onToggleCadMode?: (active: boolean) => void;
   onChangeCadTool?: (tool: 'select' | 'vertex' | 'slice') => void;
+  cutAngle?: number;
+  isAdjustingCutAngle?: boolean;
+  onToggleAdjustCutAngle?: () => void;
+  onChangeCutAngle?: (deg: number) => void;
   isSelectingFrontageEdge?: boolean;
   edgeSelectionMode?: 'none' | 'road' | 'left' | 'right';
   selectedFrontageEdgeIndices?: number[];
@@ -82,9 +112,15 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onPolygonCreated,
   onRoadLineCreated,
   onParcelGeometryUpdated,
+  onBatchParcelGeometryUpdated,
+  onMainPolygonUpdated,
   onParcelSliced,
   onToggleCadMode,
   onChangeCadTool,
+  cutAngle = 0,
+  isAdjustingCutAngle = false,
+  onToggleAdjustCutAngle,
+  onChangeCutAngle,
   isSelectingFrontageEdge = false,
   edgeSelectionMode = 'none',
   selectedFrontageEdgeIndices = [],
@@ -112,17 +148,54 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const piecesLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const edgeLabelsGroupRef = useRef<L.LayerGroup | null>(null);
   const axisLineLayerRef = useRef<L.LayerGroup | null>(null);
+  const cutAngleLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const roadLinesGroupRef = useRef<L.LayerGroup | null>(null);
   const frontageEdgeGroupRef = useRef<L.LayerGroup | null>(null);
   const vertexMarkersGroupRef = useRef<L.LayerGroup | null>(null);
   const morphAnimationGroupRef = useRef<L.LayerGroup | null>(null);
   const drawMeasurementsGroupRef = useRef<L.LayerGroup | null>(null);
+  const cadGuideLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const cadVertexLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
+  const skipFitBoundsRef = useRef<boolean>(false);
 
   const [showVertexTable, setShowVertexTable] = useState(false);
+  const [coordSystem, setCoordSystem] = useState<CoordinateSystemId>('TUREF_TM3');
+  const [selectedDom, setSelectedDom] = useState<number | 'auto'>('auto');
+  const [selectedVertexParcelId, setSelectedVertexParcelId] = useState<string | null>(null);
+  const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeDrawTool, setActiveDrawToolState] = useState<'polygon' | 'line' | 'delete' | null>(null);
   const [showOpacityPopover, setShowOpacityPopover] = useState(false);
   const [isRightMenuOpen, setIsRightMenuOpen] = useState(true);
+
+  // Dynamic-line CAD vertex editing mode & live drag HUD
+  const [dynamicLineMode, setDynamicLineMode] = useState<DynamicLineMode>('auto');
+  const dynamicLineModeRef = useRef<DynamicLineMode>('auto');
+  const [syncSharedVertices, setSyncSharedVertices] = useState<boolean>(true);
+  const syncSharedVerticesRef = useRef<boolean>(true);
+  const [vertexDragHud, setVertexDragHud] = useState<{
+    parcelName: string;
+    vertexIndex: number;
+    isNewVertex: boolean;
+    activeLineLabel: string | null;
+    activeLineColor: string;
+    activeLineBearingDeg: number | null;
+    snappedToVertex: boolean;
+    prevEdgeM: number;
+    nextEdgeM: number;
+    areaM2: number;
+    areaDeltaM2: number;
+    displacementM: number;
+    lngLat: [number, number];
+  } | null>(null);
+
+  useEffect(() => {
+    dynamicLineModeRef.current = dynamicLineMode;
+  }, [dynamicLineMode]);
+
+  useEffect(() => {
+    syncSharedVerticesRef.current = syncSharedVertices;
+  }, [syncSharedVertices]);
 
   // Live measurements HUD during polygon/line drawing
   const [drawingLiveMetrics, setDrawingLiveMetrics] = useState<{
@@ -168,18 +241,53 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   }, [externalDrawTool]);
 
-  // Active parcel for CAD Vertex Table
+  // Active parcel for CAD Vertex Table (falls back to mainPolygon when unsubdivided)
   const cadActiveParcel = useMemo(() => {
-    if (selectedParcelIds.length > 0) {
-      return parcels.find((p) => p.id === selectedParcelIds[0]) || parcels[0] || null;
+    if (parcels.length > 0) {
+      if (selectedVertexParcelId) {
+        const chosen = parcels.find((p) => p.id === selectedVertexParcelId);
+        if (chosen) return chosen;
+      }
+      if (selectedParcelIds.length > 0) {
+        return parcels.find((p) => p.id === selectedParcelIds[0]) || parcels[0];
+      }
+      return parcels[0];
     }
-    return parcels[0] || null;
-  }, [parcels, selectedParcelIds]);
+    if (mainPolygon) {
+      let area = 0;
+      try {
+        area = Math.round(turf.area(mainPolygon) * 10) / 10;
+      } catch {}
+      return {
+        id: 'main-parcel',
+        name: 'Ana Parsel',
+        feature: mainPolygon,
+        areaM2: area
+      };
+    }
+    return null;
+  }, [parcels, selectedParcelIds, selectedVertexParcelId, mainPolygon]);
 
   const activeVertices: ParcelVertex[] = useMemo(() => {
     if (!cadActiveParcel) return [];
     return getParcelVertices(cadActiveParcel.feature);
   }, [cadActiveParcel]);
+
+  const detectedAutoDom = useMemo(() => {
+    if (activeVertices.length > 0) {
+      return getAutoTurefDom(activeVertices[0].lng);
+    }
+    return 33;
+  }, [activeVertices]);
+
+  const effectiveDom = selectedDom === 'auto' ? detectedAutoDom : selectedDom;
+
+  const utmZoneDisplay = useMemo(() => {
+    if (activeVertices.length > 0) {
+      return getUtmZoneInfo(activeVertices[0].lng);
+    }
+    return { zone: 36, centralMeridian: 33, epsg: 'EPSG:5261' };
+  }, [activeVertices]);
 
   // Helper to compute union geometry for visual morphing
   const computeUnionGeometry = (
@@ -377,19 +485,28 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       map.createPane('morphPane');
       map.getPane('morphPane')!.style.zIndex = '680';
 
+      map.createPane('cadGuidePane');
+      map.getPane('cadGuidePane')!.style.zIndex = '685';
+
       map.createPane('drawMeasurementPane');
       map.getPane('drawMeasurementPane')!.style.zIndex = '690';
+
+      map.createPane('cadVertexPane');
+      map.getPane('cadVertexPane')!.style.zIndex = '695';
 
       mainLayerGroupRef.current = L.layerGroup().addTo(map);
       secondaryParcelsGroupRef.current = L.layerGroup().addTo(map);
       piecesLayerGroupRef.current = L.layerGroup().addTo(map);
       edgeLabelsGroupRef.current = L.layerGroup().addTo(map);
       axisLineLayerRef.current = L.layerGroup().addTo(map);
+      cutAngleLayerGroupRef.current = L.layerGroup().addTo(map);
       roadLinesGroupRef.current = L.layerGroup().addTo(map);
       frontageEdgeGroupRef.current = L.layerGroup().addTo(map);
       vertexMarkersGroupRef.current = L.layerGroup().addTo(map);
       morphAnimationGroupRef.current = L.layerGroup().addTo(map);
       drawMeasurementsGroupRef.current = L.layerGroup().addTo(map);
+      cadGuideLayerGroupRef.current = L.layerGroup().addTo(map);
+      cadVertexLayerGroupRef.current = L.layerGroup().addTo(map);
 
       // Translate Geoman Drawing Controls to Turkish
       try {
@@ -670,7 +787,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     tileLayerRef.current = newTileLayer;
   }, [mapSettings.tileProvider]);
 
-  // Render Main Cadastral Boundary
+  // Render Main Cadastral Boundary (with CAD Vertex Editing when unsubdivided)
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !mainLayerGroupRef.current) return;
@@ -678,18 +795,23 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     mainLayerGroupRef.current.clearLayers();
 
     if (mainPolygon) {
+      const isMainVertexEditable =
+        mapSettings.cadModeActive &&
+        mapSettings.cadActiveTool === 'vertex' &&
+        parcels.length === 0;
       const isDragMergeActive = !!mapSettings.enableDragMerge && !mapSettings.cadModeActive;
+
       const geoLayer = L.geoJSON(mainPolygon, {
         style: {
-          color: isDragMergeActive ? '#10b981' : '#16a34a',
-          weight: isDragMergeActive ? 4 : 3.5,
-          dashArray: isDragMergeActive ? '6, 4' : '4, 4',
+          color: isMainVertexEditable ? '#10b981' : isDragMergeActive ? '#10b981' : '#16a34a',
+          weight: isMainVertexEditable || isDragMergeActive ? 4 : 3.5,
+          dashArray: isMainVertexEditable ? '4, 2' : isDragMergeActive ? '6, 4' : '4, 4',
           fillColor: '#22c55e',
-          fillOpacity: 0.12
+          fillOpacity: isMainVertexEditable ? 0.18 : 0.12
         }
       }).addTo(mainLayerGroupRef.current);
 
-      if (isDragMergeActive && secondaryParcels.length > 0) {
+      if (!isMainVertexEditable && isDragMergeActive && secondaryParcels.length > 0) {
         geoLayer.eachLayer((subLayer: any) => {
           if (subLayer.pm) {
             subLayer.pm.enableLayerDrag();
@@ -740,9 +862,23 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         });
       }
 
-      map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
+      if (!skipFitBoundsRef.current && !mapSettings.cadModeActive) {
+        map.fitBounds(geoLayer.getBounds(), { padding: [40, 40] });
+      } else {
+        skipFitBoundsRef.current = false;
+      }
     }
-  }, [mainPolygon, mapSettings.enableDragMerge, mapSettings.cadModeActive, secondaryParcels, onDragMergeLoadedParcels, playMergeMorphAnimation]);
+  }, [
+    mainPolygon,
+    parcels.length,
+    mapSettings.enableDragMerge,
+    mapSettings.cadModeActive,
+    mapSettings.cadActiveTool,
+    secondaryParcels,
+    onDragMergeLoadedParcels,
+    onMainPolygonUpdated,
+    playMergeMorphAnimation
+  ]);
 
   // Render Secondary (Non-active) Loaded Cadastral Parcels from other KML files
   useEffect(() => {
@@ -1043,6 +1179,105 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   }, [axisConfig, mainPolygon]);
 
+  // Render Interactive Rotatable Cut-Angle Handle on Map
+  useEffect(() => {
+    const group = cutAngleLayerGroupRef.current;
+    if (!group) return;
+    group.clearLayers();
+
+    if (!isAdjustingCutAngle || !mainPolygon) return;
+
+    try {
+      const center = turf.centerOfMass(mainPolygon);
+      const bbox = turf.bbox(mainPolygon);
+      const diagKm = Math.max(
+        0.03,
+        turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[3]]), { units: 'kilometers' })
+      );
+      const armKm = diagKm * 0.65;
+
+      const bearingA = ((cutAngle % 360) + 360) % 360;
+      const bearingB = (bearingA + 180) % 360;
+
+      const endA = turf.destination(center, armKm, bearingA, { units: 'kilometers' });
+      const endB = turf.destination(center, armKm, bearingB, { units: 'kilometers' });
+
+      const axisLine = L.polyline(
+        [
+          [endA.geometry.coordinates[1], endA.geometry.coordinates[0]],
+          [endB.geometry.coordinates[1], endB.geometry.coordinates[0]]
+        ],
+        {
+          pane: 'drawMeasurementPane',
+          color: '#f59e0b',
+          weight: 3.5,
+          dashArray: '8, 6'
+        }
+      ).addTo(group);
+
+      // Center pivot dot
+      L.circleMarker([center.geometry.coordinates[1], center.geometry.coordinates[0]], {
+        pane: 'drawMeasurementPane',
+        radius: 5,
+        color: '#ffffff',
+        weight: 2,
+        fillColor: '#f59e0b',
+        fillOpacity: 1
+      }).addTo(group);
+
+      const createAngleHandle = (ptCoords: [number, number]) => {
+        const handleIcon = L.divIcon({
+          className: 'cut-angle-handle-wrapper',
+          html: `<div style="width:26px;height:26px;border-radius:9999px;background:#f59e0b;border:2.5px solid #ffffff;box-shadow:0 4px 14px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#0f172a;font-size:12px;font-weight:900;cursor:grab;">↻</div>`,
+          iconSize: [26, 26],
+          iconAnchor: [13, 13]
+        });
+
+        const marker = L.marker([ptCoords[1], ptCoords[0]], {
+          pane: 'drawMeasurementPane',
+          draggable: true,
+          icon: handleIcon
+        }).addTo(group);
+
+        marker.bindTooltip(`Kesim Açısı: ${cutAngle.toFixed(1)}° (Sürükle)`, {
+          direction: 'top',
+          offset: [0, -14],
+          className: 'bg-amber-500 text-slate-950 font-bold text-[11px] px-2 py-0.5 rounded shadow'
+        });
+
+        marker.on('drag', (ev: any) => {
+          const ll = ev.latlng || marker.getLatLng();
+          const draggedPt = turf.point([ll.lng, ll.lat]);
+          const b = turf.bearing(center, draggedPt);
+          const normDeg = Math.round(((((b % 180) + 180) % 180)) * 10) / 10;
+
+          const newEndA = turf.destination(center, armKm, normDeg, { units: 'kilometers' });
+          const newEndB = turf.destination(center, armKm, (normDeg + 180) % 360, { units: 'kilometers' });
+          axisLine.setLatLngs([
+            [newEndA.geometry.coordinates[1], newEndA.geometry.coordinates[0]],
+            [newEndB.geometry.coordinates[1], newEndB.geometry.coordinates[0]]
+          ]);
+          marker.setTooltipContent(`Kesim Açısı: ${normDeg.toFixed(1)}°`);
+        });
+
+        marker.on('dragend', () => {
+          const ll = marker.getLatLng();
+          const draggedPt = turf.point([ll.lng, ll.lat]);
+          const b = turf.bearing(center, draggedPt);
+          const normDeg = Math.round(((((b % 180) + 180) % 180)) * 10) / 10;
+          if (onChangeCutAngle) {
+            onChangeCutAngle(normDeg);
+          }
+        });
+      };
+
+      createAngleHandle(endA.geometry.coordinates as [number, number]);
+      createAngleHandle(endB.geometry.coordinates as [number, number]);
+    } catch (err) {
+      console.warn('Cut angle handle error:', err);
+    }
+  }, [isAdjustingCutAngle, mainPolygon, cutAngle, onChangeCutAngle]);
+
   // Render Parcels, Vertex Editing, Drag Merge, and Labels
   useEffect(() => {
     const map = mapRef.current;
@@ -1119,30 +1354,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         onParcelSelectToggle(p.id);
       });
 
-      // CAD Mode: Vertex Editing via Geoman pm
-      if (mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex') {
-        geoJsonLayer.eachLayer((subLayer: any) => {
-          if (subLayer.pm) {
-            subLayer.pm.enable({
-              allowSelfIntersection: false,
-              snappable: true,
-              snapDistance: 20
-            });
-
-            // Listen to vertex drag & edit events
-            const handleGeometryEdit = () => {
-              const updatedGeo = subLayer.toGeoJSON();
-              if (onParcelGeometryUpdated && (updatedGeo.geometry.type === 'Polygon' || updatedGeo.geometry.type === 'MultiPolygon')) {
-                onParcelGeometryUpdated(p.id, updatedGeo as ParcelGeometry);
-              }
-            };
-
-            subLayer.on('pm:edit', handleGeometryEdit);
-            subLayer.on('pm:vertexchange', handleGeometryEdit);
-            subLayer.on('pm:markerdragend', handleGeometryEdit);
-          }
-        });
-      } else if (!mapSettings.cadModeActive && mapSettings.enableDragMerge) {
+      if (!mapSettings.cadModeActive && mapSettings.enableDragMerge) {
         // Normal Drag-and-Drop Tevhid Mode
         geoJsonLayer.eachLayer((subLayer: any) => {
           if (subLayer.pm) {
@@ -1245,12 +1457,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               }
             }
 
+            const edgeScale = (mapSettings.edgeLabelScale ?? 100) / 100;
             const labelMarker = L.marker([mid.geometry.coordinates[1], mid.geometry.coordinates[0]], {
               pane: 'labelPane',
               interactive: false,
               icon: L.divIcon({
                 className: 'edge-tooltip-wrapper',
-                html: `<div class="edge-tooltip parallel ${isRoadFrontageEdge ? 'road-frontage' : ''}" style="transform: rotate(${angleDeg.toFixed(1)}deg); transform-origin: center center;">${dist.toFixed(1)}m${isRoadFrontageEdge ? ' 🛣️' : ''}</div>`,
+                html: `<div class="edge-tooltip parallel ${isRoadFrontageEdge ? 'road-frontage' : ''}" style="transform: rotate(${angleDeg.toFixed(1)}deg) scale(${edgeScale.toFixed(2)}); transform-origin: center center;">${dist.toFixed(1)}m${isRoadFrontageEdge ? ' 🛣️' : ''}</div>`,
                 iconSize: [64, 20],
                 iconAnchor: [32, 10]
               })
@@ -1261,8 +1474,50 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         }
       }
     });
+
+    // Also show parallel edge lengths on mainPolygon when unsubdivided
+    if (parcels.length === 0 && mainPolygon && mapSettings.showEdgeLengths) {
+      let mainCoords: [number, number][] = [];
+      if (mainPolygon.geometry.type === 'Polygon') {
+        mainCoords = mainPolygon.geometry.coordinates[0] as [number, number][];
+      } else if (mainPolygon.geometry.type === 'MultiPolygon') {
+        mainCoords = mainPolygon.geometry.coordinates[0]?.[0] as [number, number][];
+      }
+
+      const edgeScale = (mapSettings.edgeLabelScale ?? 100) / 100;
+      if (mainCoords && mainCoords.length > 2) {
+        for (let i = 0; i < mainCoords.length - 1; i++) {
+          const p1 = turf.point(mainCoords[i]);
+          const p2 = turf.point(mainCoords[i + 1]);
+          const dist = turf.distance(p1, p2, { units: 'meters' });
+          if (!Number.isFinite(dist) || dist < 0.4) continue;
+          const mid = turf.midpoint(p1, p2);
+          const bearing = turf.rhumbBearing(p1, p2);
+          let angleDeg = bearing - 90;
+          if (!Number.isFinite(angleDeg)) {
+            angleDeg = 0;
+          } else {
+            angleDeg = ((((angleDeg + 90) % 180) + 180) % 180) - 90;
+          }
+
+          const labelMarker = L.marker([mid.geometry.coordinates[1], mid.geometry.coordinates[0]], {
+            pane: 'labelPane',
+            interactive: false,
+            icon: L.divIcon({
+              className: 'edge-tooltip-wrapper',
+              html: `<div class="edge-tooltip parallel" style="transform: rotate(${angleDeg.toFixed(1)}deg) scale(${edgeScale.toFixed(2)}); transform-origin: center center;">${dist.toFixed(1)}m</div>`,
+              iconSize: [64, 20],
+              iconAnchor: [32, 10]
+            })
+          });
+          edgeLabelsGroupRef.current.addLayer(labelMarker);
+        }
+      }
+    }
   }, [
+    mainPolygon,
     parcels,
+    roadLines,
     mapSettings,
     selectedParcelIds,
     onParcelSelectToggle,
@@ -1277,7 +1532,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     vertexMarkersGroupRef.current.clearLayers();
 
     const isBalastroActive = mapSettings.showCadastre ?? true;
-    if (!isBalastroActive) return;
+    const isVertexEditing = mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex';
+    if (!isBalastroActive || isVertexEditing) return;
 
     interface RawNode {
       lng: number;
@@ -1479,7 +1735,490 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         className: `vertex-point-badge ${badgeClass}`
       });
     });
-  }, [mainPolygon, parcels, secondaryParcels, mapSettings.showCadastre]);
+  }, [mainPolygon, parcels, secondaryParcels, mapSettings.showCadastre, mapSettings.cadModeActive, mapSettings.cadActiveTool]);
+
+  // CAD Dynamic-Line Vertex Editing Engine (Handles corner dragging along dynamic rails, midpoint insertion, and right-click delete)
+  useEffect(() => {
+    const map = mapRef.current;
+    const vertexGroup = cadVertexLayerGroupRef.current;
+    const guideGroup = cadGuideLayerGroupRef.current;
+    if (!map || !vertexGroup || !guideGroup) return;
+
+    vertexGroup.clearLayers();
+    guideGroup.clearLayers();
+    setVertexDragHud(null);
+
+    const isVertexMode = mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex';
+    if (!isVertexMode) return;
+
+    // Select editable target polygons
+    const editableTargets: Array<{ id: string; name: string; feature: ParcelGeometry }> = [];
+    if (parcels.length > 0) {
+      const subset =
+        selectedParcelIds.length > 0
+          ? parcels.filter((p) => selectedParcelIds.includes(p.id))
+          : parcels;
+      subset.forEach((p) => {
+        editableTargets.push({ id: p.id, name: p.name, feature: p.feature });
+      });
+    } else if (mainPolygon) {
+      editableTargets.push({ id: 'main-parcel', name: 'Ana Parsel', feature: mainPolygon });
+    }
+
+    if (editableTargets.length === 0) return;
+
+    // Collect boundary segments (mainPolygon, all parcels, secondaryParcels, roadLines) for dynamic boundary rail
+    const boundarySources: Array<{ id: string; label: string; feature: ParcelGeometry }> = [];
+    if (mainPolygon && parcels.length > 0) {
+      boundarySources.push({ id: 'main-parcel-border', label: 'Ana Parsel', feature: mainPolygon });
+    }
+    parcels.forEach((p) => boundarySources.push({ id: p.id, label: p.name, feature: p.feature }));
+    secondaryParcels.forEach((sp) =>
+      boundarySources.push({
+        id: sp.id,
+        label: `${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}`,
+        feature: sp.geometry
+      })
+    );
+
+    const boundarySegments = extractBoundarySegments(boundarySources);
+    roadLines.forEach((rl, rIdx) => {
+      const coords = rl.geometry?.coordinates || [];
+      for (let i = 0; i < coords.length - 1; i++) {
+        boundarySegments.push({
+          a: [coords[i][0], coords[i][1]],
+          b: [coords[i + 1][0], coords[i + 1][1]],
+          sourceId: `road-${rIdx}`,
+          label: `İmar Yolu ${rIdx + 1}`
+        });
+      }
+    });
+
+    // Collect all existing vertices for point-snapping
+    const allCorners: [number, number][] = [];
+    boundarySources.forEach((src) => {
+      allCorners.push(...extractEditableVertices(src.feature));
+    });
+    if (mainPolygon && parcels.length === 0) {
+      allCorners.push(...extractEditableVertices(mainPolygon));
+    }
+
+    const commitPolygonUpdate = (
+      targetId: string,
+      updatedFeature: ParcelGeometry,
+      origVert?: [number, number],
+      finalVert?: [number, number]
+    ) => {
+      skipFitBoundsRef.current = true;
+      if (targetId === 'main-parcel') {
+        if (onMainPolygonUpdated) {
+          onMainPolygonUpdated(updatedFeature);
+        }
+        return;
+      }
+
+      // Check for shared vertices across other parcels if syncSharedVertices is active
+      if (
+        origVert &&
+        finalVert &&
+        syncSharedVerticesRef.current &&
+        parcels.length > 1 &&
+        onBatchParcelGeometryUpdated
+      ) {
+        const updates: Array<{ parcelId: string; updatedFeature: ParcelGeometry }> = [
+          { parcelId: targetId, updatedFeature }
+        ];
+
+        parcels.forEach((other) => {
+          if (other.id === targetId) return;
+          const otherVerts = extractEditableVertices(other.feature);
+          let changed = false;
+          const nextOtherVerts = otherVerts.map((ov) => {
+            const dM = turf.distance(turf.point(ov), turf.point(origVert), { units: 'meters' });
+            if (dM <= 0.25) {
+              changed = true;
+              return finalVert;
+            }
+            return ov;
+          });
+          if (changed) {
+            const nextOtherFeature = buildUpdatedParcelGeometry(other.feature, nextOtherVerts);
+            if (!hasSelfIntersection(nextOtherFeature)) {
+              updates.push({ parcelId: other.id, updatedFeature: nextOtherFeature });
+            }
+          }
+        });
+
+        onBatchParcelGeometryUpdated(updates);
+        return;
+      }
+
+      if (onParcelGeometryUpdated) {
+        onParcelGeometryUpdated(targetId, updatedFeature);
+      }
+    };
+
+    const startDynamicVertexDrag = (params: {
+      marker: L.Marker;
+      target: { id: string; name: string; feature: ParcelGeometry };
+      verts: [number, number][];
+      vIdx: number;
+      originVert: [number, number];
+      prevVert: [number, number];
+      nextVert: [number, number];
+      isNewVertex: boolean;
+    }) => {
+      const { marker, target, verts, vIdx, originVert, prevVert, nextVert, isNewVertex } = params;
+      const origAreaM2 = turf.area(target.feature);
+      const bbox = turf.bbox(target.feature);
+      const bboxDiagM = Math.max(
+        40,
+        turf.distance(turf.point([bbox[0], bbox[1]]), turf.point([bbox[2], bbox[3]]), {
+          units: 'meters'
+        })
+      );
+
+      let guideLines: DynamicGuideLine[] = [];
+      let snapTargets: [number, number][] = [];
+      let rubberPolygon: L.Polygon | null = null;
+      let activeRailLine: L.Polyline | null = null;
+      let prevEdgeLabel: L.Marker | null = null;
+      let nextEdgeLabel: L.Marker | null = null;
+      let lastSnappedLngLat: [number, number] = originVert;
+
+      const makeEdgeLabelIcon = (text: string) =>
+        L.divIcon({
+          className: 'draw-edge-measure-wrapper',
+          html: `<div class="draw-edge-measure-tooltip" style="border-color:#22d3ee;background:rgba(15,23,42,0.92);color:#e0f2fe;">${text}</div>`,
+          iconSize: [0, 0]
+        });
+
+      const buildLiveVerts = (pt: [number, number]): [number, number][] => {
+        if (isNewVertex) {
+          const copy = [...verts];
+          copy.splice(vIdx, 0, pt);
+          return copy;
+        }
+        return verts.map((v, i) => (i === vIdx ? pt : v));
+      };
+
+      marker.on('dragstart', () => {
+        guideGroup.clearLayers();
+        const mode = dynamicLineModeRef.current;
+
+        guideLines = buildDynamicGuideLines({
+          originVert,
+          prevVert,
+          nextVert,
+          cutAngleDeg: cutAngle || 0,
+          extentM: Math.max(120, bboxDiagM * 1.8),
+          boundarySegments,
+          editingParcelId: target.id
+        });
+
+        snapTargets = allCorners.filter(
+          (c) => turf.distance(turf.point(c), turf.point(originVert), { units: 'meters' }) > 0.25
+        );
+
+        // Render subtle dashed candidate dynamic guide rails
+        guideLines.forEach((gl) => {
+          if (gl.category === 'cardinal') return;
+          if (mode === 'edge' && gl.category !== 'edge' && gl.category !== 'ortho') return;
+          if (mode === 'cut' && gl.category !== 'cut') return;
+          if (mode === 'boundary' && gl.category !== 'boundary') return;
+          if (mode === 'free') return;
+
+          L.polyline(
+            [
+              [gl.p1[1], gl.p1[0]],
+              [gl.p2[1], gl.p2[0]]
+            ],
+            {
+              pane: 'cadGuidePane',
+              color: gl.color,
+              weight: 1.5,
+              opacity: 0.42,
+              dashArray: '5, 5',
+              interactive: false
+            }
+          ).addTo(guideGroup);
+        });
+
+        // Origin anchor ring
+        L.circleMarker([originVert[1], originVert[0]], {
+          pane: 'cadGuidePane',
+          radius: 4,
+          color: '#94a3b8',
+          weight: 1.5,
+          fillColor: '#0f172a',
+          fillOpacity: 0.8,
+          interactive: false
+        }).addTo(guideGroup);
+
+        // Active snapped dynamic rail highlight (initially hidden)
+        activeRailLine = L.polyline([], {
+          pane: 'cadGuidePane',
+          color: '#22d3ee',
+          weight: 3,
+          opacity: 0.95,
+          dashArray: '8, 4',
+          interactive: false
+        }).addTo(guideGroup);
+
+        // Live rubber-band polygon outline
+        const initRing = buildLiveVerts(originVert).map((c): [number, number] => [c[1], c[0]]);
+        rubberPolygon = L.polygon(initRing, {
+          pane: 'cadGuidePane',
+          color: '#34d399',
+          weight: 2.5,
+          fillColor: '#10b981',
+          fillOpacity: 0.16,
+          dashArray: '4, 3',
+          interactive: false
+        }).addTo(guideGroup);
+
+        prevEdgeLabel = L.marker(
+          [(prevVert[1] + originVert[1]) / 2, (prevVert[0] + originVert[0]) / 2],
+          {
+            pane: 'drawMeasurementPane',
+            interactive: false,
+            icon: makeEdgeLabelIcon('0.00 m')
+          }
+        ).addTo(guideGroup);
+
+        nextEdgeLabel = L.marker(
+          [(nextVert[1] + originVert[1]) / 2, (nextVert[0] + originVert[0]) / 2],
+          {
+            pane: 'drawMeasurementPane',
+            interactive: false,
+            icon: makeEdgeLabelIcon('0.00 m')
+          }
+        ).addTo(guideGroup);
+      });
+
+      marker.on('drag', (ev: any) => {
+        const raw = ev.latlng || marker.getLatLng();
+        const mode = dynamicLineModeRef.current;
+        const tolM = getMeterToleranceForPixels(map, originVert, 18);
+
+        const snap = snapVertexToDynamicLines({
+          cursorLngLat: [raw.lng, raw.lat],
+          originVert,
+          guideLines,
+          mode,
+          snapToleranceM: tolM,
+          snapTargets
+        });
+
+        lastSnappedLngLat = snap.lngLat;
+        marker.setLatLng([snap.lngLat[1], snap.lngLat[0]]);
+
+        if (activeRailLine) {
+          if (snap.activeLine) {
+            activeRailLine.setLatLngs([
+              [snap.activeLine.p1[1], snap.activeLine.p1[0]],
+              [snap.activeLine.p2[1], snap.activeLine.p2[0]]
+            ]);
+            activeRailLine.setStyle({ color: snap.activeLine.color, opacity: 0.95 });
+          } else {
+            activeRailLine.setLatLngs([]);
+          }
+        }
+
+        const liveVerts = buildLiveVerts(snap.lngLat);
+        if (rubberPolygon) {
+          rubberPolygon.setLatLngs(liveVerts.map((c): [number, number] => [c[1], c[0]]));
+        }
+
+        const prevEdgeM = turf.distance(turf.point(prevVert), turf.point(snap.lngLat), {
+          units: 'meters'
+        });
+        const nextEdgeM = turf.distance(turf.point(snap.lngLat), turf.point(nextVert), {
+          units: 'meters'
+        });
+
+        if (prevEdgeLabel) {
+          prevEdgeLabel.setLatLng([(prevVert[1] + snap.lngLat[1]) / 2, (prevVert[0] + snap.lngLat[0]) / 2]);
+          prevEdgeLabel.setIcon(makeEdgeLabelIcon(`${prevEdgeM.toFixed(2)} m`));
+        }
+        if (nextEdgeLabel) {
+          nextEdgeLabel.setLatLng([(nextVert[1] + snap.lngLat[1]) / 2, (nextVert[0] + snap.lngLat[0]) / 2]);
+          nextEdgeLabel.setIcon(makeEdgeLabelIcon(`${nextEdgeM.toFixed(2)} m`));
+        }
+
+        let liveArea = origAreaM2;
+        try {
+          liveArea = turf.area(buildUpdatedParcelGeometry(target.feature, liveVerts));
+        } catch {}
+
+        setVertexDragHud({
+          parcelName: target.name,
+          vertexIndex: vIdx + 1,
+          isNewVertex,
+          activeLineLabel: snap.activeLine
+            ? snap.activeLine.label
+            : snap.snappedToVertex
+            ? 'Köşe Noktasına Kenetlendi'
+            : null,
+          activeLineColor: snap.activeLine ? snap.activeLine.color : snap.snappedToVertex ? '#34d399' : '#94a3b8',
+          activeLineBearingDeg: snap.activeLine ? snap.activeLine.bearingDeg : null,
+          snappedToVertex: snap.snappedToVertex,
+          prevEdgeM,
+          nextEdgeM,
+          areaM2: liveArea,
+          areaDeltaM2: liveArea - origAreaM2,
+          displacementM: snap.displacementM,
+          lngLat: snap.lngLat
+        });
+      });
+
+      marker.on('dragend', () => {
+        guideGroup.clearLayers();
+        setVertexDragHud(null);
+
+        const finalPt = lastSnappedLngLat;
+        const movedM = turf.distance(turf.point(originVert), turf.point(finalPt), {
+          units: 'meters'
+        });
+
+        if (movedM < 0.02 && !isNewVertex) {
+          marker.setLatLng([originVert[1], originVert[0]]);
+          return;
+        }
+
+        const updatedVerts = buildLiveVerts(finalPt);
+        const updatedFeature = buildUpdatedParcelGeometry(target.feature, updatedVerts);
+
+        if (hasSelfIntersection(updatedFeature)) {
+          marker.setLatLng([originVert[1], originVert[0]]);
+          return;
+        }
+
+        commitPolygonUpdate(target.id, updatedFeature, isNewVertex ? undefined : originVert, finalPt);
+      });
+    };
+
+    // Render draggable corners and edge midpoint '+' handles for each editable polygon
+    editableTargets.forEach((target) => {
+      const verts = extractEditableVertices(target.feature);
+      if (verts.length < 3) return;
+
+      verts.forEach((vert, vIdx) => {
+        const prevVert = verts[(vIdx - 1 + verts.length) % verts.length];
+        const nextVert = verts[(vIdx + 1) % verts.length];
+
+        const cornerIcon = L.divIcon({
+          className: 'cad-vertex-handle-wrapper',
+          html: `<div style="width:16px;height:16px;display:flex;align-items:center;justify-content:center;cursor:grab;"><div style="width:12px;height:12px;border-radius:9999px;background:#10b981;border:2.5px solid #ffffff;box-shadow:0 2px 8px rgba(0,0,0,0.65);transition:transform 0.12s;"></div></div>`,
+          iconSize: [16, 16],
+          iconAnchor: [8, 8]
+        });
+
+        const cornerMarker = L.marker([vert[1], vert[0]], {
+          pane: 'cadVertexPane',
+          draggable: true,
+          icon: cornerIcon
+        }).addTo(vertexGroup);
+
+        cornerMarker.bindTooltip(
+          `P${vIdx + 1} (${target.name}) · Dinamik Hatla Sürükle${verts.length > 3 ? ' · Sağ Tık: Sil' : ''}`,
+          {
+            direction: 'top',
+            offset: [0, -10],
+            className: 'bg-slate-950/95 text-emerald-300 font-semibold text-[10px] px-2 py-0.5 rounded border border-emerald-500/40 shadow'
+          }
+        );
+
+        cornerMarker.on('contextmenu', (ev: any) => {
+          L.DomEvent.preventDefault(ev);
+          L.DomEvent.stopPropagation(ev);
+          if (verts.length <= 3) return;
+          const nextVerts = verts.filter((_, i) => i !== vIdx);
+          const updatedFeature = buildUpdatedParcelGeometry(target.feature, nextVerts);
+          if (!hasSelfIntersection(updatedFeature)) {
+            commitPolygonUpdate(target.id, updatedFeature);
+          }
+        });
+
+        startDynamicVertexDrag({
+          marker: cornerMarker,
+          target,
+          verts,
+          vIdx,
+          originVert: vert,
+          prevVert,
+          nextVert,
+          isNewVertex: false
+        });
+
+        // Edge midpoint '+' handle to insert a new break point and drag immediately
+        const edgeLenM = turf.distance(turf.point(vert), turf.point(nextVert), { units: 'meters' });
+        if (edgeLenM >= 1.5) {
+          const midVert: [number, number] = [
+            (vert[0] + nextVert[0]) / 2,
+            (vert[1] + nextVert[1]) / 2
+          ];
+          const midIcon = L.divIcon({
+            className: 'cad-midpoint-handle-wrapper',
+            html: `<div style="width:14px;height:14px;display:flex;align-items:center;justify-content:center;cursor:crosshair;"><div style="width:10px;height:10px;border-radius:9999px;background:rgba(56,189,248,0.85);border:1.5px solid #ffffff;box-shadow:0 1px 4px rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;color:#0f172a;font-size:9px;font-weight:900;line-height:1;">+</div></div>`,
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+          });
+
+          const midMarker = L.marker([midVert[1], midVert[0]], {
+            pane: 'cadVertexPane',
+            draggable: true,
+            icon: midIcon
+          }).addTo(vertexGroup);
+
+          midMarker.bindTooltip(`Yeni Kırık Ekle (+ Tıkla veya Sürükle)`, {
+            direction: 'top',
+            offset: [0, -8],
+            className: 'bg-slate-950/90 text-sky-300 text-[10px] px-1.5 py-0.5 rounded border border-sky-500/40 shadow'
+          });
+
+          midMarker.on('click', (ev: any) => {
+            L.DomEvent.stopPropagation(ev);
+            const nextVerts = [...verts];
+            nextVerts.splice(vIdx + 1, 0, midVert);
+            const updatedFeature = buildUpdatedParcelGeometry(target.feature, nextVerts);
+            if (!hasSelfIntersection(updatedFeature)) {
+              commitPolygonUpdate(target.id, updatedFeature);
+            }
+          });
+
+          startDynamicVertexDrag({
+            marker: midMarker,
+            target,
+            verts,
+            vIdx: vIdx + 1,
+            originVert: midVert,
+            prevVert: vert,
+            nextVert,
+            isNewVertex: true
+          });
+        }
+      });
+    });
+
+    return () => {
+      vertexGroup.clearLayers();
+      guideGroup.clearLayers();
+      setVertexDragHud(null);
+    };
+  }, [
+    mainPolygon,
+    parcels,
+    secondaryParcels,
+    roadLines,
+    selectedParcelIds,
+    mapSettings.cadModeActive,
+    mapSettings.cadActiveTool,
+    cutAngle,
+    onMainPolygonUpdated,
+    onParcelGeometryUpdated,
+    onBatchParcelGeometryUpdated
+  ]);
 
   const handleToggleDrawPolygon = (forceEnable?: boolean) => {
     const map = mapRef.current;
@@ -1972,35 +2711,77 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                 : !!(mapSettings as any)[item.key];
             const Icon = item.icon;
             return (
-              <button
-                key={item.key}
-                onClick={() => {
-                  if (onChangeMapSettings) {
-                    onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
-                  }
-                  setIsRightMenuOpen(false);
-                }}
-                className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-                  isChecked
-                    ? 'bg-white/15 text-white font-semibold border border-white/10 shadow-sm'
-                    : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.05]'
-                }`}
-                title={item.title}
-              >
-                <div className="flex items-center gap-1.5">
-                  <Icon className={`w-3.5 h-3.5 stroke-[2] ${isChecked ? item.activeColor : 'text-slate-500'}`} />
-                  <span className="text-[11px]">{item.label}</span>
-                </div>
-                <span
-                  className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+              <div key={item.key} className="space-y-1">
+                <button
+                  onClick={() => {
+                    if (onChangeMapSettings) {
+                      onChangeMapSettings({ ...mapSettings, [item.key]: !isChecked });
+                    }
+                    setIsRightMenuOpen(false);
+                  }}
+                  className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                     isChecked
-                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                      : 'text-slate-500 bg-white/[0.03]'
+                      ? 'bg-white/15 text-white font-semibold border border-white/10 shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.05]'
                   }`}
+                  title={item.title}
                 >
-                  {isChecked ? 'AÇIK' : 'KAPALI'}
-                </span>
-              </button>
+                  <div className="flex items-center gap-1.5">
+                    <Icon className={`w-3.5 h-3.5 stroke-[2] ${isChecked ? item.activeColor : 'text-slate-500'}`} />
+                    <span className="text-[11px]">{item.label}</span>
+                  </div>
+                  <span
+                    className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold ${
+                      isChecked
+                        ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+                        : 'text-slate-500 bg-white/[0.03]'
+                    }`}
+                  >
+                    {isChecked ? 'AÇIK' : 'KAPALI'}
+                  </span>
+                </button>
+
+                {item.key === 'showEdgeLengths' && isChecked && (
+                  <div className="flex items-center justify-between gap-1 px-2 py-1 rounded-lg bg-white/[0.04] border border-white/[0.07]">
+                    <span className="text-[9.5px] text-slate-400 font-medium">Boyut</span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onChangeMapSettings) {
+                            const cur = mapSettings.edgeLabelScale ?? 100;
+                            onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.max(70, cur - 15) });
+                          }
+                        }}
+                        disabled={(mapSettings.edgeLabelScale ?? 100) <= 70}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
+                        title="Kenar uzunluğu yazılarını küçült (-)"
+                      >
+                        -
+                      </button>
+                      <span className="text-[10px] font-mono font-bold text-purple-300 min-w-[34px] text-center">
+                        %{mapSettings.edgeLabelScale ?? 100}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (onChangeMapSettings) {
+                            const cur = mapSettings.edgeLabelScale ?? 100;
+                            onChangeMapSettings({ ...mapSettings, edgeLabelScale: Math.min(190, cur + 15) });
+                          }
+                        }}
+                        disabled={(mapSettings.edgeLabelScale ?? 100) >= 190}
+                        className="w-5 h-5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-30 text-white text-xs font-bold flex items-center justify-center transition"
+                        title="Kenar uzunluğu yazılarını büyüt (+)"
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
             );
           })}
 
@@ -2149,6 +2930,46 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         </div>
       )}
 
+      {/* Interactive Cut Angle Floating Control Bar */}
+      {isAdjustingCutAngle && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] h-10 px-4 bg-amber-500 text-slate-950 font-semibold rounded-full flex items-center gap-2.5 shadow-[0_12px_36px_rgba(245,158,11,0.4)] animate-in fade-in slide-in-from-top-2">
+          <RotateCw className="w-4 h-4 stroke-[2.5]" />
+          <span className="text-xs font-bold whitespace-nowrap">
+            Kesim Açısı: <span className="font-mono">{cutAngle.toFixed(1)}°</span>
+          </span>
+          {onChangeCutAngle && (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => onChangeCutAngle(Math.max(0, Math.round((cutAngle - 1) * 10) / 10))}
+                className="w-6 h-6 rounded-full bg-slate-950/15 hover:bg-slate-950/25 text-xs font-bold flex items-center justify-center transition"
+                title="1° Azalt"
+              >
+                -
+              </button>
+              <button
+                type="button"
+                onClick={() => onChangeCutAngle(Math.min(180, Math.round((cutAngle + 1) * 10) / 10))}
+                className="w-6 h-6 rounded-full bg-slate-950/15 hover:bg-slate-950/25 text-xs font-bold flex items-center justify-center transition"
+                title="1° Arttır"
+              >
+                +
+              </button>
+            </div>
+          )}
+          {onToggleAdjustCutAngle && (
+            <button
+              type="button"
+              onClick={onToggleAdjustCutAngle}
+              className="h-6 px-2.5 bg-slate-950 text-amber-300 hover:bg-slate-900 text-[11px] font-bold rounded-full flex items-center gap-1 transition"
+            >
+              <Check className="w-3 h-3 stroke-[3]" />
+              <span>Tamam</span>
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Apple-style Floating CAD Toolbar on Top of Map */}
       {mapSettings.cadModeActive && (
         <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[1000] h-11 px-3 bg-slate-950/80 backdrop-blur-2xl border border-white/10 rounded-full flex items-center gap-2 shadow-[0_12px_40px_rgba(0,0,0,0.5),inset_0_1px_0_rgba(255,255,255,0.1)] text-slate-100 animate-in fade-in zoom-in-95 duration-200">
@@ -2162,7 +2983,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           {/* Vertex Edit Tool */}
           <button
             onClick={() => onChangeCadTool && onChangeCadTool('vertex')}
-            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 ${
+            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 whitespace-nowrap ${
               mapSettings.cadActiveTool === 'vertex'
                 ? 'bg-white/20 text-white shadow-sm border border-white/10'
                 : 'text-slate-300 hover:text-white hover:bg-white/10'
@@ -2170,13 +2991,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             title="Köşeleri ve kırık noktaları çekiştirerek parseli serbestçe düzenleyin"
           >
             <Move className="w-3 h-3 stroke-[2]" />
-            <span>Köşe Taşı</span>
+            <span>Elle Köşe Düzelt</span>
           </button>
 
           {/* Slice Tool */}
           <button
             onClick={() => onChangeCadTool && onChangeCadTool('slice')}
-            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 ${
+            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 whitespace-nowrap ${
               mapSettings.cadActiveTool === 'slice'
                 ? 'bg-rose-500/80 text-white shadow-sm border border-rose-400/40'
                 : 'text-slate-300 hover:text-white hover:bg-white/10'
@@ -2190,12 +3011,12 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           {/* Vertex Coordinate Table Toggle */}
           <button
             onClick={() => setShowVertexTable((prev) => !prev)}
-            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 ${
+            className={`h-7 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 whitespace-nowrap ${
               showVertexTable
                 ? 'bg-white/20 text-white shadow-sm border border-white/10'
                 : 'text-slate-300 hover:text-white hover:bg-white/10'
             }`}
-            title="Seçili parselin köşe koordinatlarını inceleyin"
+            title="Seçili parselin TUREF / WGS84 köşe koordinatlarını inceleyin"
           >
             <Table className="w-3 h-3 stroke-[2]" />
             <span>Koordinatlar</span>
@@ -2209,7 +3030,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                 onChangeMapSettings({ ...mapSettings, parcelFillOpacity: nextVal, showFill: nextVal > 0 });
               }
             }}
-            className="h-7 px-2.5 rounded-full text-xs font-medium transition flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-white/10"
+            className="h-7 px-2.5 rounded-full text-xs font-medium transition flex items-center gap-1.5 text-slate-300 hover:text-white hover:bg-white/10 whitespace-nowrap"
             title={`Parsel Dolgu Saydamlığı: %${mapSettings.parcelFillOpacity ?? 45} (Tıklayarak döngüsel değiştir)`}
           >
             <Droplets className="w-3 h-3 stroke-[2] text-emerald-400" />
@@ -2221,7 +3042,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           {/* Done / Exit CAD Mode */}
           <button
             onClick={() => onToggleCadMode && onToggleCadMode(false)}
-            className="h-7 px-3 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-semibold rounded-full text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95"
+            className="h-7 px-3 bg-emerald-500 hover:bg-emerald-400 active:bg-emerald-600 text-slate-950 font-semibold rounded-full text-xs flex items-center gap-1.5 shadow-sm transition active:scale-95 whitespace-nowrap"
           >
             <Check className="w-3.5 h-3.5 stroke-[2.5]" />
             <span>Tamamla</span>
@@ -2229,59 +3050,274 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         </div>
       )}
 
-      {/* Floating CAD Vertex Coordinate Table (Apple Window Style) */}
+      {/* Dynamic Line Mode Sub-Bar when Elle Köşe Düzelt (CAD Vertex Edit) is Active */}
+      {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' && (
+        <div className="absolute top-[116px] left-1/2 -translate-x-1/2 z-[995] h-8 px-2.5 bg-slate-950/85 backdrop-blur-2xl border border-white/15 rounded-full flex items-center gap-1 shadow-[0_8px_28px_rgba(0,0,0,0.45)] text-slate-200 animate-in fade-in slide-in-from-top-1 duration-150">
+          <div className="flex items-center gap-1 pr-1.5 text-[10px] font-semibold text-cyan-300 whitespace-nowrap">
+            <Magnet className="w-3 h-3 stroke-[2.2]" />
+            <span>Dinamik Hat:</span>
+          </div>
+          {(
+            [
+              { id: 'auto', label: 'Akıllı Hat', title: 'Kenar, 90° dik, kesim ekseni ve parsel sınırına otomatik kenetlenerek sürükler' },
+              { id: 'edge', label: 'Kenar Hattı', title: 'Köşeyi yalnızca komşu kenar doğrultusu veya 90° dik hat boyunca kaydırır' },
+              { id: 'cut', label: 'Kesim Ekseni', title: 'Köşeyi yalnızca aktif kesim açısı ekseni boyunca kaydırır' },
+              { id: 'boundary', label: 'Sınır Hattı', title: 'Köşeyi ana parsel veya komşu parsel sınırı üzerinde kaydırır' },
+              { id: 'free', label: 'Serbest', title: 'Hat kilidi olmadan serbest sürükleme' }
+            ] as const
+          ).map((modeOpt) => (
+            <button
+              key={modeOpt.id}
+              type="button"
+              onClick={() => setDynamicLineMode(modeOpt.id)}
+              title={modeOpt.title}
+              className={`h-6 px-2.5 rounded-full text-[10px] font-medium transition whitespace-nowrap ${
+                dynamicLineMode === modeOpt.id
+                  ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                  : 'text-slate-300 hover:text-white hover:bg-white/10'
+              }`}
+            >
+              {modeOpt.label}
+            </button>
+          ))}
+
+          {parcels.length > 1 && (
+            <>
+              <div className="h-3.5 w-px bg-white/15 mx-0.5" />
+              <button
+                type="button"
+                onClick={() => setSyncSharedVertices((prev) => !prev)}
+                title="Ortak Köşe Senkronu: İfraz parsellerinin paylaştığı köşeleri birlikte kaydırır"
+                className={`h-6 px-2 rounded-full text-[10px] font-medium transition flex items-center gap-1 whitespace-nowrap ${
+                  syncSharedVertices
+                    ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-400/40'
+                    : 'text-slate-400 hover:text-white hover:bg-white/10'
+                }`}
+              >
+                <Link2 className="w-3 h-3" />
+                <span>Ortak Köşe</span>
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Live HUD During Vertex Drag on Dynamic Line */}
+      {vertexDragHud && (
+        <div
+          className={`fixed ${
+            showVertexTable ? 'top-[156px]' : 'bottom-16'
+          } left-1/2 -translate-x-1/2 z-[1010] apple-glass rounded-2xl px-4 py-2 border border-cyan-500/40 shadow-2xl text-white flex items-center gap-3.5 pointer-events-none backdrop-blur-2xl animate-in zoom-in-95 duration-100`}
+        >
+          <div className="flex items-center gap-2 border-r border-white/10 pr-3">
+            <span
+              className="w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ backgroundColor: vertexDragHud.activeLineColor }}
+            />
+            <div className="flex flex-col">
+              <span className="text-[9px] uppercase font-bold tracking-wider text-slate-400">
+                P{vertexDragHud.vertexIndex} {vertexDragHud.isNewVertex ? '(Yeni Kırık)' : ''} · {vertexDragHud.parcelName}
+              </span>
+              <span className="text-[11px] font-bold" style={{ color: vertexDragHud.activeLineColor }}>
+                {vertexDragHud.activeLineLabel || 'Serbest Sürükleme'}
+                {vertexDragHud.activeLineBearingDeg !== null ? ` (${vertexDragHud.activeLineBearingDeg.toFixed(1)}°)` : ''}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400 font-semibold uppercase">Komşu Kenarlar</span>
+            <span className="font-mono font-bold text-xs text-sky-300">
+              {vertexDragHud.prevEdgeM.toFixed(2)} m · {vertexDragHud.nextEdgeM.toFixed(2)} m
+            </span>
+          </div>
+
+          <div className="h-6 w-px bg-white/10" />
+
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400 font-semibold uppercase">Kayma</span>
+            <span className="font-mono font-bold text-xs text-amber-300">
+              {vertexDragHud.displacementM.toFixed(2)} m
+            </span>
+          </div>
+
+          <div className="h-6 w-px bg-white/10" />
+
+          <div className="flex flex-col">
+            <span className="text-[9px] text-slate-400 font-semibold uppercase">Yeni Alan</span>
+            <div className="flex items-center gap-1.5">
+              <span className="font-mono font-extrabold text-xs text-emerald-400">
+                {vertexDragHud.areaM2.toLocaleString('tr-TR', { maximumFractionDigits: 1 })} m²
+              </span>
+              <span
+                className={`font-mono text-[10px] font-bold ${
+                  vertexDragHud.areaDeltaM2 >= 0 ? 'text-emerald-300' : 'text-rose-300'
+                }`}
+              >
+                ({vertexDragHud.areaDeltaM2 >= 0 ? '+' : ''}
+                {vertexDragHud.areaDeltaM2.toFixed(1)})
+              </span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Floating CAD Vertex Coordinate Table (TUREF TM 3°, TUREF UTM 6°, WGS84) */}
       {showVertexTable && cadActiveParcel && (
-        <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-[1000] w-[520px] max-w-[95vw] apple-glass rounded-2xl p-4 shadow-[0_24px_64px_rgba(0,0,0,0.6)] border border-white/10 text-xs space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
-          <div className="flex items-center justify-between border-b border-white/[0.08] pb-2">
-            <div className="flex items-center gap-2 font-medium text-white">
-              <Table className="w-4 h-4 text-blue-400 stroke-[1.75]" />
-              <span className="tracking-tight">Köşe Koordinatları — {cadActiveParcel.name}</span>
-              <span className="text-emerald-400 font-mono text-[11px] font-medium">({cadActiveParcel.areaM2.toFixed(1)} m²)</span>
+        <div className="absolute bottom-14 left-1/2 -translate-x-1/2 z-[1000] w-[580px] max-w-[95vw] apple-glass rounded-2xl p-4 shadow-[0_24px_64px_rgba(0,0,0,0.6)] border border-white/10 text-xs space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-200">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/[0.08] pb-2">
+            <div className="flex items-center gap-2 font-medium text-white min-w-0">
+              <Table className="w-4 h-4 text-blue-400 stroke-[1.75] shrink-0" />
+              <span className="tracking-tight truncate">Köşe Koordinatları — {cadActiveParcel.name}</span>
+              <span className="text-emerald-400 font-mono text-[11px] font-medium shrink-0">({cadActiveParcel.areaM2.toFixed(1)} m²)</span>
             </div>
             <button
               onClick={() => setShowVertexTable(false)}
-              className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
+              className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition shrink-0"
+              title="Kapat"
             >
               <X className="w-3.5 h-3.5" />
             </button>
           </div>
 
+          {/* Koordinat Sistemi & Parsel Seçici Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+            <div className="flex items-center gap-1 bg-white/[0.06] p-0.5 rounded-lg border border-white/10">
+              {(['TUREF_TM3', 'TUREF_UTM6', 'WGS84'] as CoordinateSystemId[]).map((sys) => (
+                <button
+                  key={sys}
+                  type="button"
+                  onClick={() => setCoordSystem(sys)}
+                  className={`px-2 py-1 rounded-md text-[10px] font-medium transition whitespace-nowrap ${
+                    coordSystem === sys
+                      ? 'bg-blue-500 text-white shadow-sm'
+                      : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  {getCoordinateSystemDisplayName(sys)}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {coordSystem === 'TUREF_TM3' && (
+                <select
+                  value={selectedDom}
+                  onChange={(e) => setSelectedDom(e.target.value === 'auto' ? 'auto' : Number(e.target.value))}
+                  className="bg-black/40 border border-white/15 rounded-lg px-2 py-1 text-[10px] font-mono text-slate-200 focus:outline-none focus:border-blue-400"
+                  title="Dilim Orta Meridyeni (DOM)"
+                >
+                  <option value="auto">DOM: Oto ({detectedAutoDom}°)</option>
+                  {TURKEY_TM3_DOMS.map((dom) => (
+                    <option key={dom} value={dom}>
+                      DOM {dom}° (TM{dom})
+                    </option>
+                  ))}
+                </select>
+              )}
+
+              {parcels.length > 1 && (
+                <select
+                  value={cadActiveParcel.id}
+                  onChange={(e) => setSelectedVertexParcelId(e.target.value)}
+                  className="bg-black/40 border border-white/15 rounded-lg px-2 py-1 text-[10px] text-slate-200 focus:outline-none focus:border-blue-400 max-w-[140px]"
+                  title="Koordinatı görüntülenecek parseli seçin"
+                >
+                  {parcels.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+            <span>
+              {coordSystem === 'TUREF_TM3'
+                ? `Sistem: TUREF TM${effectiveDom} (DOM ${effectiveDom}°) · ${getTurefTm3Epsg(effectiveDom)}`
+                : coordSystem === 'TUREF_UTM6'
+                ? `Sistem: TUREF UTM 6° (Dilim ${utmZoneDisplay.zone}N) · ${utmZoneDisplay.epsg}`
+                : 'Sistem: WGS84 Coğrafi · EPSG:4326'}
+            </span>
+            <span>{activeVertices.length} Köşe Noktası</span>
+          </div>
+
           <div className="max-h-48 overflow-y-auto pr-1">
-            <table className="w-full text-left font-mono text-[11px] text-slate-300">
+            <table className="w-full text-left font-mono tabular-nums text-[11px] text-slate-300">
               <thead>
-                <tr className="border-b border-white/[0.08] text-slate-400 text-[10px] uppercase tracking-wider">
+                <tr className="border-b border-white/[0.08] text-slate-400 text-[10px] tracking-wider">
                   <th className="py-1.5 font-medium">Nokta</th>
-                  <th className="py-1.5 font-medium">Boylam (X)</th>
-                  <th className="py-1.5 font-medium">Enlem (Y)</th>
-                  <th className="py-1.5 text-right font-medium">Kenar Boyu</th>
+                  <th className="py-1.5 font-medium text-right">
+                    {coordSystem === 'WGS84' ? 'Boylam (λ)' : coordSystem === 'TUREF_UTM6' ? 'Sağa (E) [m]' : 'Sağa (Y) [m]'}
+                  </th>
+                  <th className="py-1.5 font-medium text-right">
+                    {coordSystem === 'WGS84' ? 'Enlem (φ)' : coordSystem === 'TUREF_UTM6' ? 'Yukarı (N) [m]' : 'Yukarı (X) [m]'}
+                  </th>
+                  <th className="py-1.5 text-right font-medium">Kenar (m)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/[0.04]">
-                {activeVertices.map((v) => (
-                  <tr key={v.index} className="hover:bg-white/[0.04] transition-colors">
-                    <td className="py-1.5 text-blue-400 font-medium">P{v.index}</td>
-                    <td className="py-1.5">{v.lng.toFixed(6)}</td>
-                    <td className="py-1.5">{v.lat.toFixed(6)}</td>
-                    <td className="py-1.5 text-right text-emerald-400 font-medium">{v.lengthToNextM.toFixed(2)} m</td>
-                  </tr>
-                ))}
+                {activeVertices.map((v) => {
+                  const formatted = formatCoordinateInSystem(
+                    v.lng,
+                    v.lat,
+                    coordSystem,
+                    coordSystem === 'TUREF_TM3' ? effectiveDom : undefined
+                  );
+                  return (
+                    <tr key={v.index} className="hover:bg-white/[0.04] transition-colors">
+                      <td className="py-1.5 text-blue-400 font-medium">P{v.index}</td>
+                      <td className="py-1.5 text-right">{formatted.xFormatted}</td>
+                      <td className="py-1.5 text-right">{formatted.yFormatted}</td>
+                      <td className="py-1.5 text-right text-emerald-400 font-medium">{v.lengthToNextM.toFixed(2)} m</td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
 
           <div className="flex items-center justify-between text-[11px] text-slate-400 border-t border-white/[0.08] pt-2">
-            <span className="font-normal text-[10px] text-slate-400">Köşeleri haritada sürükleyerek canlı değiştirebilirsiniz.</span>
+            <span className="font-normal text-[10px] text-slate-400">
+              Elle köşe düzeltmede noktaları sürükleyerek koordinatları canlı güncelleyebilirsiniz.
+            </span>
             <button
+              type="button"
               onClick={() => {
+                const header =
+                  coordSystem === 'WGS84'
+                    ? 'Nokta,Boylam_X,Enlem_Y,Mesafe_m,Sistem'
+                    : `Nokta,Saga_Y_m,Yukari_X_m,Mesafe_m,Sistem`;
                 const csvData = activeVertices
-                  .map((v) => `P${v.index},${v.lng.toFixed(6)},${v.lat.toFixed(6)},${v.lengthToNextM.toFixed(2)}`)
+                  .map((v) => {
+                    const fmt = formatCoordinateInSystem(
+                      v.lng,
+                      v.lat,
+                      coordSystem,
+                      coordSystem === 'TUREF_TM3' ? effectiveDom : undefined
+                    );
+                    return `P${v.index},${fmt.xFormatted},${fmt.yFormatted},${v.lengthToNextM.toFixed(2)},${fmt.zoneLabel}`;
+                  })
                   .join('\n');
-                navigator.clipboard.writeText(`Nokta,X,Y,Mesafe_m\n${csvData}`);
-                alert('Köşe koordinatları panoya kopyalandı.');
+                navigator.clipboard.writeText(`${header}\n${csvData}`);
+                setCopiedCoords(true);
+                setTimeout(() => setCopiedCoords(false), 2000);
               }}
-              className="text-blue-400 hover:text-blue-300 font-medium text-[11px] transition"
+              className="flex items-center gap-1.5 text-blue-400 hover:text-blue-300 font-medium text-[11px] transition shrink-0"
             >
-              Kopyala
+              {copiedCoords ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-emerald-400" />
+                  <span className="text-emerald-400">Kopyalandı</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Listeyi Kopyala</span>
+                </>
+              )}
             </button>
           </div>
         </div>

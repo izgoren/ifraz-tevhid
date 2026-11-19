@@ -1,4 +1,5 @@
 import { GeneratedParcel } from '../types';
+import { toTurefTM3 } from './coordinateSystems';
 
 /**
  * Generates valid KML file content with custom styles, parcel names, and areas.
@@ -99,10 +100,10 @@ export function exportToGeoJSON(parcels: GeneratedParcel[]): string {
 }
 
 /**
- * Exports parcel corner point coordinates as CSV (Netcad / CAD NOP list format).
+ * Exports parcel corner point coordinates as CSV (Netcad / CAD NOP & TUREF format).
  */
 export function exportToCSV(parcels: GeneratedParcel[]): string {
-  let csv = 'Parsel_Adi,Ada_No,Parsel_No,Malik,Nokta_No,Boylam_X,Enlem_Y,Alan_m2,Notes\n';
+  let csv = 'Parsel_Adi,Ada_No,Parsel_No,Malik,Nokta_No,TUREF_Y_Saga_m,TUREF_X_Yukari_m,TUREF_DOM,TUREF_EPSG,Boylam_X,Enlem_Y,Alan_m2,Notes\n';
 
   parcels.forEach((p) => {
     let coords: [number, number][] = [];
@@ -112,8 +113,10 @@ export function exportToCSV(parcels: GeneratedParcel[]): string {
       coords = p.feature.geometry.coordinates[0][0] as [number, number][];
     }
 
-    coords.forEach((pt, idx) => {
-      csv += `"${p.name}","${p.adaNo || ''}","${p.parselNo || ''}","${p.ownerName || ''}",P${idx + 1},${pt[0].toFixed(8)},${pt[1].toFixed(8)},${p.areaM2},"${p.notes || ''}"\n`;
+    const uniqueCoords = coords.length > 1 ? coords.slice(0, -1) : coords;
+    uniqueCoords.forEach((pt, idx) => {
+      const turef = toTurefTM3(pt[0], pt[1]);
+      csv += `"${p.name}","${p.adaNo || ''}","${p.parselNo || ''}","${p.ownerName || ''}",P${idx + 1},${turef.sagaY.toFixed(2)},${turef.yukariX.toFixed(2)},${turef.centralMeridian},${turef.epsg},${pt[0].toFixed(8)},${pt[1].toFixed(8)},${p.areaM2},"${p.notes || ''}"\n`;
     });
   });
 
