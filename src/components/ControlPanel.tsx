@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Undo,
   Redo,
@@ -41,7 +41,8 @@ import {
   Eye,
   Crosshair,
   RotateCw,
-  Landmark
+  Landmark,
+  GripHorizontal
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
@@ -70,7 +71,6 @@ interface ControlPanelProps {
   onUpdateParcelAttributes: (parcelId: string, attrs: any) => void;
   statusMessage?: string;
   onOpenPrintModal?: () => void;
-  onOpenSoilAnalysis?: (tab?: 'soil' | 'slope') => void;
   onRecalculate?: () => void;
   roadLines?: Feature<LineString>[];
   mainPolygonEdges?: ParcelEdge[];
@@ -130,7 +130,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onExportCSV,
   onReset,
   onOpenPrintModal,
-  onOpenSoilAnalysis,
   onRecalculate,
   mainPolygonEdges = [],
   selectedFrontageEdgeIndices = [],
@@ -158,6 +157,81 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const [showPiecePopover, setShowPiecePopover] = useState(false);
   const [showAnglePopover, setShowAnglePopover] = useState(false);
   const [showDoubleRowPopover, setShowDoubleRowPopover] = useState(false);
+
+  // Draggable Sol İfraz Paneli Konumu
+  const ifrazPanelRef = useRef<HTMLDivElement | null>(null);
+  const [ifrazPos, setIfrazPos] = useState<{ x: number; y: number }>(() => {
+    if (typeof window === 'undefined') return { x: 16, y: 16 };
+    try {
+      const saved = localStorage.getItem('ifraz_left_panel_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          return {
+            x: Math.max(8, Math.min(window.innerWidth - 220, parsed.x)),
+            y: Math.max(8, Math.min(window.innerHeight - 120, parsed.y))
+          };
+        }
+      }
+    } catch {}
+    return { x: 16, y: 16 };
+  });
+
+  useEffect(() => {
+    const handleResize = () => {
+      const panelEl = ifrazPanelRef.current;
+      const w = panelEl?.offsetWidth || 208;
+      const h = panelEl?.offsetHeight || 120;
+      setIfrazPos((prev) => ({
+        x: Math.max(8, Math.min(window.innerWidth - w - 8, prev.x)),
+        y: Math.max(8, Math.min(window.innerHeight - h - 8, prev.y))
+      }));
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleIfrazDragStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest('button')) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const origX = ifrazPos.x;
+      const origY = ifrazPos.y;
+      const panelEl = ifrazPanelRef.current;
+      const panelW = panelEl?.offsetWidth || 208;
+      const panelH = panelEl?.offsetHeight || 120;
+      let latestPos = { x: origX, y: origY };
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        const nextX = Math.max(8, Math.min(window.innerWidth - panelW - 8, origX + dx));
+        const nextY = Math.max(8, Math.min(window.innerHeight - panelH - 8, origY + dy));
+        latestPos = { x: nextX, y: nextY };
+        setIfrazPos(latestPos);
+      };
+
+      const onPointerUp = () => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
+        try {
+          localStorage.setItem('ifraz_left_panel_pos', JSON.stringify(latestPos));
+        } catch {}
+      };
+
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
+    },
+    [ifrazPos]
+  );
+
+  const popoversOpenLeft = typeof window !== 'undefined' && ifrazPos.x > window.innerWidth / 2;
 
   // PWA and Service Worker Update Hooks
   const { hasUpdate, isChecking, lastCheckedText, checkForUpdate, applyUpdate } = useServiceWorkerUpdate();
@@ -217,7 +291,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         {/* Farklı Kaydet & Dışa Aktar Butonu */}
         <div className="relative">
           <button
-            onClick={() => setShowSaveAsMenu((prev) => !prev)}
+            onClick={() => {
+              setShowSaveAsMenu((prev) => !prev);
+              setShowBaseMapMenu(false);
+              setShowSettingsMenu(false);
+            }}
             className={`w-7 h-7 rounded-full flex items-center justify-center transition ${
               showSaveAsMenu
                 ? 'bg-blue-500 text-white shadow-sm'
@@ -341,6 +419,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             onClick={() => {
               setShowBaseMapMenu((prev) => !prev);
               setShowSettingsMenu(false);
+              setShowSaveAsMenu(false);
             }}
             className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
               showBaseMapMenu
@@ -406,6 +485,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             onClick={() => {
               setShowSettingsMenu((prev) => !prev);
               setShowBaseMapMenu(false);
+              setShowSaveAsMenu(false);
             }}
             className={`h-8 px-3 rounded-full text-xs font-medium transition flex items-center gap-1.5 active:scale-95 border ${
               hasUpdate
@@ -758,29 +838,49 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
         )}
       </div>
 
-      {/* ================= SOL İFRAZ MENÜSÜ (SAĞ ÇİZİM ARAÇLARI GİBİ BUTONLU DOCK) ================= */}
-      {/* Kapalı Durumda Açma Butonu */}
+      {/* ================= SOL İFRAZ MENÜSÜ (EKRANDA SÜRÜKLENEBİLİR BUTONLU DOCK) ================= */}
+      {/* Kapalı Durumda Sürüklenebilir Açma Butonu */}
       {!panelOpen && (
-        <button
-          onClick={() => setPanelOpen(true)}
-          className="absolute top-4 left-4 z-[990] h-11 px-3.5 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-2 transition active:scale-95 hover:bg-slate-900/90 shadow-lg border border-white/10"
-          title="İfraz Menüsünü Aç"
+        <div
+          ref={ifrazPanelRef}
+          onPointerDown={handleIfrazDragStart}
+          style={{ left: `${ifrazPos.x}px`, top: `${ifrazPos.y}px` }}
+          className="fixed z-[990] h-11 px-2.5 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-1.5 transition hover:bg-slate-900/90 shadow-lg border border-white/15 cursor-grab active:cursor-grabbing select-none touch-none"
+          title="Sürükleyerek taşıyabilir veya tıklayarak İfraz menüsünü açabilirsiniz"
         >
-          <Scissors className="w-4 h-4 text-blue-400 stroke-[2]" />
-          <span className="font-semibold text-xs">İfraz</span>
-        </button>
+          <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <button
+            type="button"
+            onClick={() => setPanelOpen(true)}
+            className="flex items-center gap-1.5 pr-1 hover:text-blue-300 transition active:scale-95"
+            title="İfraz Menüsünü Aç"
+          >
+            <Scissors className="w-4 h-4 text-blue-400 stroke-[2]" />
+            <span className="font-semibold text-xs">İfraz</span>
+          </button>
+        </div>
       )}
 
-      {/* Açık Durumda Butonlu İfraz Menüsü */}
+      {/* Açık Durumda Sürüklenebilir Butonlu İfraz Menüsü */}
       {panelOpen && (
-        <div className="absolute top-4 left-4 z-[990] w-52 apple-glass rounded-2xl p-2.5 space-y-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-left-2 duration-200 select-none">
-          {/* Header */}
-          <div className="flex items-center justify-between px-1 pb-1 border-b border-white/[0.08]">
+        <div
+          ref={ifrazPanelRef}
+          style={{ left: `${ifrazPos.x}px`, top: `${ifrazPos.y}px` }}
+          className="fixed z-[990] w-52 apple-glass rounded-2xl p-2.5 space-y-2 shadow-[0_20px_50px_rgba(0,0,0,0.5)] border border-white/15 text-white animate-in fade-in duration-150 select-none"
+        >
+          {/* Sürüklenebilir Header */}
+          <div
+            onPointerDown={handleIfrazDragStart}
+            className="flex items-center justify-between px-1 pb-1 border-b border-white/[0.08] cursor-grab active:cursor-grabbing touch-none"
+            title="Başlıktan tutup ekranda istediğiniz yere sürükleyin"
+          >
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+              <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <Scissors className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
               <span>İfraz</span>
             </div>
             <button
+              type="button"
               onClick={() => setPanelOpen(false)}
               className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
               title="Gizle"
@@ -826,7 +926,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             {/* Parça Sayısı Butonu & Popover */}
             <div className="relative">
               <button
-                onClick={() => setShowPiecePopover((prev) => !prev)}
+                onClick={() => {
+                  setShowPiecePopover((prev) => !prev);
+                  setShowAnglePopover(false);
+                  setShowDoubleRowPopover(false);
+                }}
                 className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                   showPiecePopover
                     ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
@@ -847,7 +951,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
               {/* Parça Sayısı Popover */}
               {showPiecePopover && (
-                <div className="absolute left-full top-0 ml-2 z-[1100] w-72 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                <div className={`absolute top-0 z-[1100] w-72 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in duration-150 ${popoversOpenLeft ? 'right-full mr-2 slide-in-from-right-1' : 'left-full ml-2 slide-in-from-left-1'}`}>
                   <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
                     <span className="text-xs font-semibold text-slate-200">Parça Sayısı (İfraz Adedi)</span>
                     <div className="flex items-center gap-1.5">
@@ -925,7 +1029,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             {/* Kesim Açısı Butonu & Popover */}
             <div className="relative">
               <button
-                onClick={() => setShowAnglePopover((prev) => !prev)}
+                onClick={() => {
+                  setShowAnglePopover((prev) => !prev);
+                  setShowPiecePopover(false);
+                  setShowDoubleRowPopover(false);
+                }}
                 className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                   showAnglePopover
                     ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
@@ -946,7 +1054,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
               {/* Kesim Açısı Popover */}
               {showAnglePopover && (
-                <div className="absolute left-full top-0 ml-2 z-[1100] w-68 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                <div className={`absolute top-0 z-[1100] w-68 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in duration-150 ${popoversOpenLeft ? 'right-full mr-2 slide-in-from-right-1' : 'left-full ml-2 slide-in-from-left-1'}`}>
                   <div className="flex items-center justify-between border-b border-white/[0.08] pb-1.5">
                     <span className="text-xs font-semibold text-slate-200">İfraz Kesim Açısı</span>
                     <div className="flex items-center gap-1">
@@ -1062,7 +1170,11 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
             {/* Çift Sıra İfraz Butonu & Popover */}
             <div className="relative">
               <button
-                onClick={() => setShowDoubleRowPopover((prev) => !prev)}
+                onClick={() => {
+                  setShowDoubleRowPopover((prev) => !prev);
+                  setShowPiecePopover(false);
+                  setShowAnglePopover(false);
+                }}
                 className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
                   config.isDoubleRow
                     ? 'bg-purple-600 text-white font-bold shadow-md shadow-purple-600/30'
@@ -1083,7 +1195,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
 
               {/* Çift Sıra Popover */}
               {showDoubleRowPopover && (
-                <div className="absolute left-full top-0 ml-2 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in slide-in-from-left-1 duration-150">
+                <div className={`absolute top-0 z-[1100] w-64 apple-glass rounded-2xl p-3 shadow-2xl border border-white/15 text-white space-y-2.5 animate-in fade-in duration-150 ${popoversOpenLeft ? 'right-full mr-2 slide-in-from-right-1' : 'left-full ml-2 slide-in-from-left-1'}`}>
                   <label className="flex items-center justify-between text-xs font-medium text-slate-200 cursor-pointer">
                     <span>Çift Sıra Modu</span>
                     <input
@@ -1170,45 +1282,6 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 <div className="text-[10px] text-slate-400">
                   Dik Açı: <span className="text-amber-300 font-mono font-bold">{multiFrontage.perpAngle}°</span>
                 </div>
-              </div>
-            )}
-
-            {/* Zemin Türü Tahmini & Jeoteknik Analiz Butonu */}
-            {onOpenSoilAnalysis && (
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  onClick={() => {
-                    onOpenSoilAnalysis('soil');
-                    setPanelOpen(false);
-                  }}
-                  className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-amber-500/15 hover:bg-amber-500/25 text-amber-200 border border-amber-500/30 hover:border-amber-400 shadow-sm"
-                  title="TBDY 2018 Zemin Sınıfları (ZA-ZF), Vs30, Taşıma Gücü ve Jeoteknik Raporu"
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <Mountain className="w-3.5 h-3.5 text-amber-400 stroke-[2] shrink-0" />
-                    <span className="text-[11px] font-medium text-slate-100 truncate">Zemin (TBDY)</span>
-                  </div>
-                  <span className="text-[9px] px-1 py-0.5 rounded font-mono font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30 shrink-0">
-                    ZA-ZF
-                  </span>
-                </button>
-
-                <button
-                  onClick={() => {
-                    onOpenSoilAnalysis('slope');
-                    setPanelOpen(false);
-                  }}
-                  className="h-8 px-2 rounded-xl text-xs font-semibold transition flex items-center justify-between active:scale-95 bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-200 border border-emerald-500/30 hover:border-emerald-400 shadow-sm"
-                  title="Topoğrafik Eğim, Kot Farkı, Açığa Çıkan Katlar ve Mekânsal Yerleşime Uygunluk Raporu"
-                >
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <TrendingUp className="w-3.5 h-3.5 text-emerald-400 stroke-[2] shrink-0" />
-                    <span className="text-[11px] font-medium text-slate-100 truncate">Eğim Raporu</span>
-                  </div>
-                  <span className="text-[9px] px-1 py-0.5 rounded font-mono font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 shrink-0">
-                    UÖ/ÖA
-                  </span>
-                </button>
               </div>
             )}
           </div>

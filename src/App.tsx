@@ -49,13 +49,13 @@ const DEFAULT_CONFIG: SubdivisionConfig = {
   commonAngle: 0,
   leftAngle: 0,
   rightAngle: 0,
-  checkMinFrontage: true,
+  checkMinFrontage: false,
   minFrontageVal: 10,
-  checkMinRearWidth: true,
+  checkMinRearWidth: false,
   minRearWidthVal: 10,
   checkMaxDepth: false,
   maxDepthVal: 40,
-  checkMinArea: true,
+  checkMinArea: false,
   minAreaVal: 400,
   selectedProvince: 'İstanbul',
   selectedDistrict: 'Kadıköy',
@@ -124,6 +124,7 @@ export default function App() {
   const [tkgmTargetMode, setTkgmTargetMode] = useState<'active' | 'secondary'>('active');
   const [isPickingTkgmParcel, setIsPickingTkgmParcel] = useState<boolean>(false);
   const [isTkgmPickLoading, setIsTkgmPickLoading] = useState<boolean>(false);
+  const [isObjectQueryActive, setIsObjectQueryActive] = useState<boolean>(false);
   const [tkgmPickResult, setTkgmPickResult] = useState<{
     feature: ParcelGeometry;
     properties: TkgmParcelProperties;
@@ -292,14 +293,9 @@ export default function App() {
       setSelectedParcelIds([]);
       isCadDirtyRef.current = false;
 
-      const invalidCount = generated.filter((p) => !p.isValid).length;
       if (generated.length === 1) {
         setStatusMessage(
           `1 Parsel (Tek Parsel • Ada: ${cadastralInfo.adaNo}, Parsel: ${cadastralInfo.parselNo} • ${generated[0]?.areaM2} m²).`
-        );
-      } else if (invalidCount > 0) {
-        setStatusMessage(
-          `${generated.length} Parsel Oluşturuldu (${invalidCount} adedi asgari cephe/alan sınırını sağlamıyor).`
         );
       } else {
         setStatusMessage(
@@ -1381,6 +1377,52 @@ export default function App() {
     [isTkgmPickLoading, tkgmTargetMode, handleTkgmParcelLoaded]
   );
 
+  // Obje Silme İşleyicileri (Sorgu -> Sil)
+  const handleDeleteGeneratedParcel = useCallback(
+    (parcelId: string) => {
+      const target = parcels.find((p) => p.id === parcelId);
+      if (!target) return;
+      pushUndoState(`Parsel Silindi (${target.name})`);
+      isCadDirtyRef.current = true;
+      setParcels((prev) => prev.filter((p) => p.id !== parcelId));
+      setSelectedParcelIds((prev) => prev.filter((id) => id !== parcelId));
+      setStatusMessage(`${target.name} silindi.`);
+    },
+    [parcels, pushUndoState]
+  );
+
+  const handleDeleteSecondaryParcel = useCallback(
+    (parcelId: string) => {
+      pushUndoState('İlave Parsel Silindi');
+      handleRemoveParcel(parcelId);
+      setStatusMessage('Seçilen ilave parsel haritadan silindi.');
+    },
+    [handleRemoveParcel, pushUndoState]
+  );
+
+  const handleDeleteRoadLine = useCallback(
+    (roadIndex: number) => {
+      pushUndoState(`Yol Çizgisi #${roadIndex + 1} Silindi`);
+      setRoadLines((prev) => prev.filter((_, idx) => idx !== roadIndex));
+      setStatusMessage(`Yol çizgisi #${roadIndex + 1} silindi.`);
+    },
+    [pushUndoState]
+  );
+
+  const handleClearMainPolygon = useCallback(() => {
+    if (!mainPolygon) return;
+    pushUndoState('Ana Parsel Silindi');
+    if (activeParcelId) {
+      handleRemoveParcel(activeParcelId);
+    }
+    setMainPolygon(null);
+    setActiveParcelId(null);
+    setParcels([]);
+    setSelectedParcelIds([]);
+    setSelectedFrontageEdgeIndices([]);
+    setStatusMessage('Ana parsel haritadan silindi.');
+  }, [mainPolygon, activeParcelId, handleRemoveParcel, pushUndoState]);
+
   // Calculate Real-time Summary Statistics
   const stats: StatsSummary = useMemo(() => {
     if (parcels.length === 0) {
@@ -1485,16 +1527,60 @@ export default function App() {
           onSelectActiveParcel={handleSelectActiveParcel}
           onDragMergeLoadedParcels={handleDragMergeLoadedParcels}
           externalDrawTool={activeDrawTool}
-          onActiveDrawToolChange={setActiveDrawTool}
+          onActiveDrawToolChange={(tool) => {
+            setActiveDrawTool(tool);
+            if (tool) setIsObjectQueryActive(false);
+          }}
           isPickingTkgmParcel={
             isTkgmBarOpen &&
             isPickingTkgmParcel &&
+            !isObjectQueryActive &&
             !mapSettings.cadModeActive &&
             !isSelectingFrontageEdge &&
             !isAdjustingCutAngle &&
             !activeDrawTool
           }
           onPickTkgmCoord={handlePickTkgmCoord}
+          isObjectQueryActive={
+            isObjectQueryActive &&
+            !mapSettings.cadModeActive &&
+            !isSelectingFrontageEdge &&
+            !isAdjustingCutAngle &&
+            !activeDrawTool
+          }
+          onToggleObjectQuery={() => {
+            setIsObjectQueryActive((prev) => {
+              const next = !prev;
+              if (next) {
+                setIsPickingTkgmParcel(false);
+                setIsSelectingFrontageEdge(false);
+                setEdgeSelectionMode('none');
+                setIsAdjustingCutAngle(false);
+                setActiveDrawTool(null);
+                setMapSettings((ms) => (ms.cadModeActive ? { ...ms, cadModeActive: false } : ms));
+                setStatusMessage('Obje Sor Aktif: Harita üzerinde parsel, yol veya nokta tıklayarak detayları sorgulayın.');
+              } else {
+                setStatusMessage('Obje Sor modu kapatıldı.');
+              }
+              return next;
+            });
+          }}
+          cadastralInfo={cadastralInfo}
+          onOpenSoilAnalysis={(tab, parcelId) => {
+            if (parcelId) {
+              setSoilModalParcelId(parcelId);
+            } else if (activeParcelId) {
+              setSoilModalParcelId(activeParcelId);
+            } else if (parcels[0]) {
+              setSoilModalParcelId(parcels[0].id);
+            }
+            setSoilModalInitialTab(tab || 'soil');
+            setIsSoilModalOpen(true);
+          }}
+          onDeleteGeneratedParcel={handleDeleteGeneratedParcel}
+          onDeleteSecondaryParcel={handleDeleteSecondaryParcel}
+          onDeleteRoadLine={handleDeleteRoadLine}
+          onClearMainPolygon={handleClearMainPolygon}
         />
       </div>
 
@@ -1521,7 +1607,6 @@ export default function App() {
         onUpdateParcelAttributes={handleUpdateParcelAttributes}
         statusMessage={statusMessage}
         onOpenPrintModal={() => setIsPrintModalOpen(true)}
-        onOpenSoilAnalysis={(tab) => handleOpenSoilAnalysis(undefined, tab || 'soil')}
         onRecalculate={handleRecalculate}
         roadLines={roadLines}
         mainPolygonEdges={mainPolygonEdges}
@@ -1583,6 +1668,7 @@ export default function App() {
               setEdgeSelectionMode('none');
               setIsAdjustingCutAngle(false);
               setActiveDrawTool(null);
+              setIsObjectQueryActive(false);
               setMapSettings((ms) => (ms.cadModeActive ? { ...ms, cadModeActive: false } : ms));
             } else {
               setIsPickingTkgmParcel(false);
@@ -1594,7 +1680,7 @@ export default function App() {
       </div>
 
       {/* TKGM Parsel Sorgu Floating Bar */}
-      {!mapSettings.cadModeActive && !isSelectingFrontageEdge && !isAdjustingCutAngle && !activeDrawTool && (
+      {!mapSettings.cadModeActive && !isSelectingFrontageEdge && !isAdjustingCutAngle && !activeDrawTool && !isObjectQueryActive && (
         <TkgmQueryBar
           isOpen={isTkgmBarOpen}
           onClose={() => {
@@ -1609,6 +1695,7 @@ export default function App() {
             setIsPickingTkgmParcel((prev) => {
               const next = !prev;
               if (next) {
+                setIsObjectQueryActive(false);
                 setIsSelectingFrontageEdge(false);
                 setEdgeSelectionMode('none');
                 setIsAdjustingCutAngle(false);

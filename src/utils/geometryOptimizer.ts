@@ -557,7 +557,7 @@ export function validateParcel(
 
   const minFrontageLimit = config.minFrontageVal ?? 10;
   const minRearLimit = config.minRearWidthVal ?? 10;
-  const checkRear = config.checkMinRearWidth ?? true;
+  const checkRear = config.checkMinRearWidth ?? false;
 
   // 1. Yol Tarafı (Cephesi) Kontrolü: Min 10m
   if (config.checkMinFrontage) {

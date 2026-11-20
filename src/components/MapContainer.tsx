@@ -6,6 +6,7 @@ import '@geoman-io/leaflet-geoman-free/dist/leaflet-geoman.css';
 import * as turf from '@turf/turf';
 import type { Feature, LineString, Polygon, MultiPolygon } from 'geojson';
 import { GeneratedParcel, MapSettings, ParcelGeometry, LoadedCadastralParcel } from '../types';
+import type { CadastralInfo } from '../utils/cadastralLocation';
 import { getParcelVertices, ParcelVertex, getMainPolygonEdges, ParcelEdge } from '../utils/geometryOptimizer';
 import {
   Scissors,
@@ -35,7 +36,10 @@ import {
   Copy,
   Magnet,
   Link2,
-  GripHorizontal
+  GripHorizontal,
+  Info,
+  TrendingUp,
+  MapPin
 } from 'lucide-react';
 import {
   CoordinateSystemId,
@@ -101,6 +105,14 @@ interface MapContainerProps {
   onActiveDrawToolChange?: (tool: 'polygon' | 'line' | 'delete' | null) => void;
   isPickingTkgmParcel?: boolean;
   onPickTkgmCoord?: (lat: number, lng: number) => void;
+  isObjectQueryActive?: boolean;
+  onToggleObjectQuery?: () => void;
+  cadastralInfo?: CadastralInfo;
+  onOpenSoilAnalysis?: (tab?: 'soil' | 'slope', parcelId?: string) => void;
+  onDeleteGeneratedParcel?: (parcelId: string) => void;
+  onDeleteSecondaryParcel?: (parcelId: string) => void;
+  onDeleteRoadLine?: (roadIndex: number) => void;
+  onClearMainPolygon?: () => void;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -145,7 +157,15 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   externalDrawTool,
   onActiveDrawToolChange,
   isPickingTkgmParcel = false,
-  onPickTkgmCoord
+  onPickTkgmCoord,
+  isObjectQueryActive = false,
+  onToggleObjectQuery,
+  cadastralInfo,
+  onOpenSoilAnalysis,
+  onDeleteGeneratedParcel,
+  onDeleteSecondaryParcel,
+  onDeleteRoadLine,
+  onClearMainPolygon
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -165,6 +185,18 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const skipFitBoundsRef = useRef<boolean>(false);
   const isPickingTkgmRef = useRef<boolean>(isPickingTkgmParcel);
   isPickingTkgmRef.current = isPickingTkgmParcel;
+  const isObjectQueryRef = useRef<boolean>(isObjectQueryActive);
+  isObjectQueryRef.current = isObjectQueryActive;
+  const cadastralInfoRef = useRef<CadastralInfo | undefined>(cadastralInfo);
+  cadastralInfoRef.current = cadastralInfo;
+  const onDeleteGeneratedParcelRef = useRef(onDeleteGeneratedParcel);
+  onDeleteGeneratedParcelRef.current = onDeleteGeneratedParcel;
+  const onDeleteSecondaryParcelRef = useRef(onDeleteSecondaryParcel);
+  onDeleteSecondaryParcelRef.current = onDeleteSecondaryParcel;
+  const onDeleteRoadLineRef = useRef(onDeleteRoadLine);
+  onDeleteRoadLineRef.current = onDeleteRoadLine;
+  const onClearMainPolygonRef = useRef(onClearMainPolygon);
+  onClearMainPolygonRef.current = onClearMainPolygon;
 
   const [showVertexTable, setShowVertexTable] = useState(false);
   const [coordSystem, setCoordSystem] = useState<CoordinateSystemId>('TUREF_TM3');
@@ -172,7 +204,55 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const [selectedVertexParcelId, setSelectedVertexParcelId] = useState<string | null>(null);
   const [copiedCoords, setCopiedCoords] = useState(false);
   const [activeDrawTool, setActiveDrawToolState] = useState<'polygon' | 'line' | 'delete' | null>(null);
+  const activeDrawToolRef = useRef<'polygon' | 'line' | 'delete' | null>(null);
+  activeDrawToolRef.current = activeDrawTool;
+
+  const [inspectedObject, setInspectedObject] = useState<{
+    kind: 'generated-parcel' | 'main-parcel' | 'secondary-parcel' | 'road-line' | 'map-point';
+    id?: string;
+    roadIndex?: number;
+    title: string;
+    subtitle?: string;
+    areaM2?: number;
+    perimeterM?: number;
+    lengthM?: number;
+    vertexCount?: number;
+    edgeLengthsM?: number[];
+    il?: string;
+    ilce?: string;
+    mahalle?: string;
+    adaNo?: string;
+    parselNo?: string;
+    soilClass?: string;
+    vs30?: number;
+    bearingCapacity?: number;
+    avgSlopePercent?: number;
+    aspect?: string;
+    elevationDiffM?: number;
+    latlng: [number, number];
+  } | null>(null);
+
   const [isRightMenuOpen, setIsRightMenuOpen] = useState(true);
+  const cadPanelRef = useRef<HTMLDivElement | null>(null);
+  const [cadPos, setCadPos] = useState<{ x: number; y: number }>(() => {
+    if (typeof window === 'undefined') return { x: 800, y: 16 };
+    try {
+      const saved = localStorage.getItem('ifraz_cad_panel_pos');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+          return {
+            x: Math.max(8, Math.min(window.innerWidth - 240, parsed.x)),
+            y: Math.max(8, Math.min(window.innerHeight - 120, parsed.y))
+          };
+        }
+      }
+    } catch {}
+    return {
+      x: Math.max(8, window.innerWidth - 240),
+      y: 16
+    };
+  });
   const [isVisibilityOpen, setIsVisibilityOpen] = useState(true);
   const visibilityPanelRef = useRef<HTMLDivElement | null>(null);
   const [visibilityPos, setVisibilityPos] = useState<{ x: number; y: number }>(() => {
@@ -250,6 +330,61 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     [visibilityPos]
   );
 
+  // Clamp draggable CAD & Çizim panel inside viewport on window resize
+  useEffect(() => {
+    const handleResize = () => {
+      const panelEl = cadPanelRef.current;
+      const w = panelEl?.offsetWidth || 224;
+      const h = panelEl?.offsetHeight || 120;
+      setCadPos((prev) => ({
+        x: Math.max(8, Math.min(window.innerWidth - w - 8, prev.x)),
+        y: Math.max(8, Math.min(window.innerHeight - h - 8, prev.y))
+      }));
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const handleCadDragStart = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest('button')) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const origX = cadPos.x;
+      const origY = cadPos.y;
+      const panelEl = cadPanelRef.current;
+      const panelW = panelEl?.offsetWidth || 224;
+      const panelH = panelEl?.offsetHeight || 120;
+      let latestPos = { x: origX, y: origY };
+
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const dx = moveEvent.clientX - startX;
+        const dy = moveEvent.clientY - startY;
+        const nextX = Math.max(8, Math.min(window.innerWidth - panelW - 8, origX + dx));
+        const nextY = Math.max(8, Math.min(window.innerHeight - panelH - 8, origY + dy));
+        latestPos = { x: nextX, y: nextY };
+        setCadPos(latestPos);
+      };
+
+      const onPointerUp = () => {
+        window.removeEventListener('pointermove', onPointerMove);
+        window.removeEventListener('pointerup', onPointerUp);
+        window.removeEventListener('pointercancel', onPointerUp);
+        try {
+          localStorage.setItem('ifraz_cad_panel_pos', JSON.stringify(latestPos));
+        } catch {}
+      };
+
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
+    },
+    [cadPos]
+  );
+
   // Dynamic-line CAD vertex editing mode & live drag HUD
   const [dynamicLineMode, setDynamicLineMode] = useState<DynamicLineMode>('auto');
   const dynamicLineModeRef = useRef<DynamicLineMode>('auto');
@@ -311,14 +446,19 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   // Sync externalDrawTool changes with internal state
   useEffect(() => {
     if (externalDrawTool !== undefined && externalDrawTool !== activeDrawTool) {
+      const map = mapRef.current;
       if (externalDrawTool === 'polygon') {
         handleToggleDrawPolygon(true);
-      } else if (externalDrawTool === null && activeDrawTool === 'polygon') {
-        const map = mapRef.current;
+      } else if (externalDrawTool === 'line') {
+        handleToggleDrawLine(true);
+      } else if (externalDrawTool === 'delete') {
+        handleToggleRemovalMode(true);
+      } else if (externalDrawTool === null) {
         if (map) {
           map.pm.disableDraw();
+          if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
         }
-        setActiveDrawTool(null);
+        setActiveDrawToolState(null);
       }
     }
   }, [externalDrawTool]);
@@ -814,31 +954,50 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   }, [onPolygonCreated, onRoadLineCreated, mapSettings.cadModeActive, mapSettings.cadActiveTool, cadActiveParcel, parcels, onParcelSliced]);
 
-  // Handle TKGM Map-Click Parcel Lookup Mode
+  // Handle TKGM Map-Click, Obje Sor Query, and Sil Delete Cursor/Map Click
   useEffect(() => {
     const map = mapRef.current;
     const container = map?.getContainer();
     if (!map) return;
 
     if (container) {
-      container.style.cursor = isPickingTkgmParcel ? 'crosshair' : '';
+      if (isPickingTkgmParcel) {
+        container.style.cursor = 'crosshair';
+      } else if (isObjectQueryActive) {
+        container.style.cursor = 'help';
+      } else if (activeDrawTool === 'delete') {
+        container.style.cursor = 'crosshair';
+      } else {
+        container.style.cursor = '';
+      }
     }
 
-    if (!isPickingTkgmParcel || !onPickTkgmCoord) return;
-
-    const handleTkgmMapClick = (e: L.LeafletMouseEvent) => {
+    const handleSpecialMapClick = (e: L.LeafletMouseEvent) => {
       if (!e.latlng) return;
-      onPickTkgmCoord(e.latlng.lat, e.latlng.lng);
+      if (isPickingTkgmParcel && onPickTkgmCoord) {
+        onPickTkgmCoord(e.latlng.lat, e.latlng.lng);
+        return;
+      }
+      if (isObjectQueryActive) {
+        setInspectedObject({
+          kind: 'map-point',
+          title: 'Harita Koordinat Noktası',
+          subtitle: 'Detaylı bilgi için parsel veya çizgi üzerine de tıklayabilirsiniz',
+          latlng: [e.latlng.lat, e.latlng.lng]
+        });
+      }
     };
 
-    map.on('click', handleTkgmMapClick);
+    if (isPickingTkgmParcel || isObjectQueryActive) {
+      map.on('click', handleSpecialMapClick);
+    }
     return () => {
-      map.off('click', handleTkgmMapClick);
+      map.off('click', handleSpecialMapClick);
       if (container) {
         container.style.cursor = '';
       }
     };
-  }, [isPickingTkgmParcel, onPickTkgmCoord]);
+  }, [isPickingTkgmParcel, onPickTkgmCoord, isObjectQueryActive, activeDrawTool]);
 
   // Handle CAD Slice Tool Activation in Map
   useEffect(() => {
@@ -918,6 +1077,42 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           fillOpacity: isMainVertexEditable ? 0.18 : 0.12
         }
       }).addTo(mainLayerGroupRef.current);
+
+      geoLayer.on('click', (e) => {
+        if (isPickingTkgmRef.current) return;
+        if (activeDrawToolRef.current === 'delete') {
+          L.DomEvent.stopPropagation(e);
+          onClearMainPolygonRef.current?.();
+          return;
+        }
+        if (isObjectQueryRef.current) {
+          L.DomEvent.stopPropagation(e);
+          const verts = getParcelVertices(mainPolygon);
+          const edgeLengthsM = verts.map((v) => v.lengthToNextM);
+          const perimeterM = edgeLengthsM.reduce((a, b) => a + b, 0);
+          let areaM2 = 0;
+          try {
+            areaM2 = turf.area(mainPolygon);
+          } catch {}
+          const cInfo = cadastralInfoRef.current;
+          setInspectedObject({
+            kind: 'main-parcel',
+            id: 'main-parcel',
+            title: cInfo?.adaNo || cInfo?.parselNo ? `Ana Parsel (${cInfo.adaNo}/${cInfo.parselNo})` : 'Ana Parsel',
+            subtitle: 'Kadastro Ana Sınırı',
+            areaM2,
+            perimeterM,
+            vertexCount: verts.length,
+            edgeLengthsM,
+            il: cInfo?.il,
+            ilce: cInfo?.ilce,
+            mahalle: cInfo?.mahalle,
+            adaNo: cInfo?.adaNo,
+            parselNo: cInfo?.parselNo,
+            latlng: [e.latlng.lat, e.latlng.lng]
+          });
+        }
+      });
 
       if (!isMainVertexEditable && isDragMergeActive && secondaryParcels.length > 0) {
         geoLayer.eachLayer((subLayer: any) => {
@@ -1008,8 +1203,42 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         }
       }).addTo(secondaryParcelsGroupRef.current!);
 
-      geoLayer.on('click', () => {
+      geoLayer.on('click', (e) => {
         if (isPickingTkgmRef.current) return;
+        if (activeDrawToolRef.current === 'delete') {
+          L.DomEvent.stopPropagation(e);
+          onDeleteSecondaryParcelRef.current?.(sp.id);
+          return;
+        }
+        if (isObjectQueryRef.current) {
+          L.DomEvent.stopPropagation(e);
+          const verts = getParcelVertices(sp.geometry);
+          const edgeLengthsM = verts.map((v) => v.lengthToNextM);
+          const perimeterM = edgeLengthsM.reduce((a, b) => a + b, 0);
+          setInspectedObject({
+            kind: 'secondary-parcel',
+            id: sp.id,
+            title: `Parsel ${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}`,
+            subtitle: 'Yüklü Kadastro Parseli',
+            areaM2: sp.areaM2,
+            perimeterM,
+            vertexCount: verts.length,
+            edgeLengthsM,
+            il: sp.cadastralInfo.il,
+            ilce: sp.cadastralInfo.ilce,
+            mahalle: sp.cadastralInfo.mahalle,
+            adaNo: sp.cadastralInfo.adaNo,
+            parselNo: sp.cadastralInfo.parselNo,
+            soilClass: sp.soilClassification?.soilClass,
+            vs30: sp.soilClassification?.vs30,
+            bearingCapacity: sp.soilClassification?.bearingCapacityKgCm2,
+            avgSlopePercent: sp.topography?.avgSlopePercent,
+            aspect: sp.topography?.aspect,
+            elevationDiffM: sp.topography?.elevationDiffM,
+            latlng: [e.latlng.lat, e.latlng.lng]
+          });
+          return;
+        }
         if (!isDragMergeActive && onSelectActiveParcel) {
           onSelectActiveParcel(sp);
         }
@@ -1112,7 +1341,42 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             iconAnchor: [30, 10]
           })
         });
-        marker.on('click', () => {
+        marker.on('click', (e) => {
+          if (isPickingTkgmRef.current) return;
+          if (activeDrawToolRef.current === 'delete') {
+            L.DomEvent.stopPropagation(e);
+            onDeleteSecondaryParcelRef.current?.(sp.id);
+            return;
+          }
+          if (isObjectQueryRef.current) {
+            L.DomEvent.stopPropagation(e);
+            const verts = getParcelVertices(sp.geometry);
+            const edgeLengthsM = verts.map((v) => v.lengthToNextM);
+            const perimeterM = edgeLengthsM.reduce((a, b) => a + b, 0);
+            setInspectedObject({
+              kind: 'secondary-parcel',
+              id: sp.id,
+              title: `Parsel ${sp.cadastralInfo.adaNo}/${sp.cadastralInfo.parselNo}`,
+              subtitle: 'Yüklü Kadastro Parseli',
+              areaM2: sp.areaM2,
+              perimeterM,
+              vertexCount: verts.length,
+              edgeLengthsM,
+              il: sp.cadastralInfo.il,
+              ilce: sp.cadastralInfo.ilce,
+              mahalle: sp.cadastralInfo.mahalle,
+              adaNo: sp.cadastralInfo.adaNo,
+              parselNo: sp.cadastralInfo.parselNo,
+              soilClass: sp.soilClassification?.soilClass,
+              vs30: sp.soilClassification?.vs30,
+              bearingCapacity: sp.soilClassification?.bearingCapacityKgCm2,
+              avgSlopePercent: sp.topography?.avgSlopePercent,
+              aspect: sp.topography?.aspect,
+              elevationDiffM: sp.topography?.elevationDiffM,
+              latlng: [e.latlng.lat, e.latlng.lng]
+            });
+            return;
+          }
           if (onSelectActiveParcel) onSelectActiveParcel(sp);
         });
         secondaryParcelsGroupRef.current!.addLayer(marker);
@@ -1139,6 +1403,31 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         permanent: true,
         direction: 'center',
         className: 'bg-amber-900/90 text-amber-200 border border-amber-600 font-bold text-[10px] px-1.5 py-0.5 rounded shadow'
+      });
+
+      lineLayer.on('click', (e) => {
+        if (isPickingTkgmRef.current) return;
+        if (activeDrawToolRef.current === 'delete') {
+          L.DomEvent.stopPropagation(e);
+          onDeleteRoadLineRef.current?.(i);
+          return;
+        }
+        if (isObjectQueryRef.current) {
+          L.DomEvent.stopPropagation(e);
+          let lengthM = 0;
+          try {
+            lengthM = turf.length(rl, { units: 'meters' });
+          } catch {}
+          setInspectedObject({
+            kind: 'road-line',
+            roadIndex: i,
+            title: `İmar / Yol Cephesi ${i + 1}`,
+            subtitle: 'Çizilen Yol Güzergahı',
+            lengthM,
+            vertexCount: rl.geometry?.coordinates?.length || 0,
+            latlng: [e.latlng.lat, e.latlng.lng]
+          });
+        }
       });
     });
   }, [roadLines]);
@@ -1399,11 +1688,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       const isSelected = selectedParcelIds.includes(p.id);
 
       let fillColor = idx % 2 === 0 ? '#0284c7' : '#f59e0b';
-      let strokeColor = p.isValid ? '#0284c7' : '#dc2626';
-
-      if (!p.isValid) {
-        fillColor = '#ef4444';
-      }
+      let strokeColor = '#0284c7';
 
       if (isSelected) {
         fillColor = '#a855f7';
@@ -1425,15 +1710,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         }
       }).addTo(piecesLayerGroupRef.current);
 
-      // Tooltip content
+      // Tooltip content (Yol/Bitiş ve Min İmar Uyarıları kaldırıldı)
       const labelParts: string[] = [];
       if (mapSettings.showNames) labelParts.push(`<b>${p.name}</b>`);
       if (mapSettings.showAreas) labelParts.push(`${(p.areaM2 || 0).toFixed(1)} m²`);
-      if ((p.frontageM || 0) > 0 || (p.rearWidthM !== undefined && p.rearWidthM > 0)) {
-        labelParts.push(
-          `<span style="font-size: 10px; opacity: 0.95;">Yol: ${(p.frontageM || 0).toFixed(1)}m | Bitiş: ${(p.rearWidthM || 0).toFixed(1)}m</span>`
-        );
-      }
       if (p.topography && (mapSettings.showSlopeInfo ?? true)) {
         labelParts.push(
           `<span style="font-size: 9.5px; color: #6ee7b7; font-weight: 600;">Eğim: %${p.topography.avgSlopePercent} (${p.topography.aspect}) | ΔZ: ${p.topography.elevationDiffM}m</span>`
@@ -1443,9 +1723,6 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         labelParts.push(
           `<span style="font-size: 9px; color: #fcd34d; font-weight: 600;">🏗️ Zemin: ${p.soilClassification.soilClass} (qa: ${p.soilClassification.bearingCapacityKgCm2} kg)</span>`
         );
-      }
-      if (!p.isValid && p.validationReasons.length > 0) {
-        labelParts.push(`<span style="color: #fca5a5; font-size: 9px; font-weight: bold;">⚠️ Min 10m / İmar Uyarısı</span>`);
       }
 
       if (labelParts.length > 0) {
@@ -1457,10 +1734,43 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         });
       }
 
-      // Click to select
+      // Click: Sil, Obje Sor veya Parsel Seç
       geoJsonLayer.on('click', (e) => {
         if (isPickingTkgmRef.current) return;
         L.DomEvent.stopPropagation(e);
+        if (activeDrawToolRef.current === 'delete') {
+          onDeleteGeneratedParcelRef.current?.(p.id);
+          return;
+        }
+        if (isObjectQueryRef.current) {
+          const verts = getParcelVertices(p.feature);
+          const edgeLengthsM = verts.map((v) => v.lengthToNextM);
+          const perimeterM = edgeLengthsM.reduce((a, b) => a + b, 0);
+          const cInfo = cadastralInfoRef.current;
+          setInspectedObject({
+            kind: 'generated-parcel',
+            id: p.id,
+            title: p.name,
+            subtitle: 'İfraz Parseli',
+            areaM2: p.areaM2,
+            perimeterM,
+            vertexCount: verts.length,
+            edgeLengthsM,
+            il: cInfo?.il,
+            ilce: cInfo?.ilce,
+            mahalle: cInfo?.mahalle,
+            adaNo: cInfo?.adaNo,
+            parselNo: cInfo?.parselNo,
+            soilClass: p.soilClassification?.soilClass,
+            vs30: p.soilClassification?.vs30,
+            bearingCapacity: p.soilClassification?.bearingCapacityKgCm2,
+            avgSlopePercent: p.topography?.avgSlopePercent,
+            aspect: p.topography?.aspect,
+            elevationDiffM: p.topography?.elevationDiffM,
+            latlng: [e.latlng.lat, e.latlng.lng]
+          });
+          return;
+        }
         onParcelSelectToggle(p.id);
       });
 
@@ -2355,10 +2665,11 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   };
 
-  const handleToggleDrawLine = () => {
+  const handleToggleDrawLine = (forceEnable?: boolean) => {
     const map = mapRef.current;
     if (!map) return;
-    if (activeDrawTool === 'line') {
+    const shouldEnable = forceEnable !== undefined ? forceEnable : activeDrawTool !== 'line';
+    if (!shouldEnable) {
       map.pm.disableDraw();
       setActiveDrawTool(null);
     } else {
@@ -2373,16 +2684,17 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   };
 
-  const handleToggleRemovalMode = () => {
+  const handleToggleRemovalMode = (forceEnable?: boolean) => {
     const map = mapRef.current;
     if (!map) return;
-    if (activeDrawTool === 'delete') {
-      map.pm.disableGlobalRemovalMode();
+    const shouldEnable = forceEnable !== undefined ? forceEnable : activeDrawTool !== 'delete';
+    if (!shouldEnable) {
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
       setActiveDrawTool(null);
     } else {
       map.pm.disableDraw();
+      if (map.pm.globalRemovalModeEnabled()) map.pm.disableGlobalRemovalMode();
       if (mapSettings.cadModeActive && onToggleCadMode) onToggleCadMode(false);
-      map.pm.enableGlobalRemovalMode();
       setActiveDrawTool('delete');
     }
   };
@@ -2445,213 +2757,315 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         </div>
       )}
 
-      {/* Kapalı Durumda Sağ Menüyü Açma Butonu */}
+      {/* Kapalı Durumda Sürüklenebilir Sağ Menüyü Açma Butonu */}
       {!isRightMenuOpen && (
-        <button
-          onClick={() => setIsRightMenuOpen(true)}
-          className="absolute top-4 right-4 z-[1000] h-10 px-3.5 apple-glass rounded-full flex items-center gap-2 text-white shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 hover:border-white/20 active:scale-95 transition"
-          title="CAD & Çizim Araçları Menüsünü Aç"
+        <div
+          ref={cadPanelRef}
+          onPointerDown={handleCadDragStart}
+          style={{ left: `${cadPos.x}px`, top: `${cadPos.y}px` }}
+          className="no-print fixed z-[1000] h-10 px-2.5 apple-glass rounded-full flex items-center gap-1.5 text-white shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/15 hover:border-white/25 transition cursor-grab active:cursor-grabbing select-none touch-none"
+          title="Sürükleyerek taşıyabilir veya tıklayarak CAD & Çizim menüsünü açabilirsiniz"
         >
-          <PenTool className="w-4 h-4 text-blue-400 stroke-[2]" />
-          <span className="font-semibold text-xs">CAD & Çizim</span>
-          <ChevronRight className="w-3.5 h-3.5 text-slate-400 rotate-180" />
-        </button>
+          <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+          <button
+            type="button"
+            onClick={() => setIsRightMenuOpen(true)}
+            className="flex items-center gap-1.5 pr-1 hover:text-blue-300 transition active:scale-95"
+            title="CAD & Çizim Araçları Menüsünü Aç"
+          >
+            <PenTool className="w-4 h-4 text-blue-400 stroke-[2]" />
+            <span className="font-semibold text-xs">CAD & Çizim</span>
+            <ChevronRight className="w-3.5 h-3.5 text-slate-400 rotate-180" />
+          </button>
+        </div>
       )}
 
-      {/* Sağ Taraf: CAD Araçları İçerisine Gruplanmış Çizim ve CAD Araç Çubuğu */}
+      {/* Sürüklenebilir CAD & Çizim Araç Çubuğu */}
       {isRightMenuOpen && (
-        <div className="absolute top-4 right-4 z-[1000] flex flex-col p-2 apple-glass rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/10 text-white animate-in fade-in slide-in-from-right-2 duration-200 w-44">
-          {/* Header */}
-          <div className="flex items-center justify-between px-1.5 py-1 border-b border-white/[0.08] mb-1.5">
+        <div
+          ref={cadPanelRef}
+          style={{ left: `${cadPos.x}px`, top: `${cadPos.y}px` }}
+          className="no-print fixed z-[1000] flex flex-col p-2.5 apple-glass rounded-2xl shadow-[0_12px_40px_rgba(0,0,0,0.5)] border border-white/15 text-white animate-in fade-in duration-150 w-56 select-none"
+        >
+          {/* Sürüklenebilir Header */}
+          <div
+            onPointerDown={handleCadDragStart}
+            className="flex items-center justify-between px-1.5 py-1 border-b border-white/[0.08] mb-2 cursor-grab active:cursor-grabbing touch-none"
+            title="Başlıktan tutup ekranda istediğiniz yere sürükleyin"
+          >
             <div className="flex items-center gap-1.5 text-xs font-bold text-slate-100">
+              <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <PenTool className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
               <span>CAD & Çizim</span>
             </div>
             <div className="flex items-center gap-1">
-              {(activeDrawTool || mapSettings.cadModeActive || mapSettings.enableDragMerge) && (
+              {(activeDrawTool || mapSettings.cadModeActive || mapSettings.enableDragMerge || isObjectQueryActive) && (
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
               )}
               <button
+                type="button"
                 onClick={() => setIsRightMenuOpen(false)}
                 className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition"
-                title="Sağ Menüyü Gizle"
+                title="CAD & Çizim Menüsünü Gizle"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>
             </div>
           </div>
 
-        {/* Grup 1: Çizim Araçları */}
-        <div className="space-y-1">
-          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Çizim Araçları
+          <div className="space-y-2 max-h-[82vh] overflow-y-auto pr-0.5">
+            {/* Başlık 1: Çizim & Silme */}
+            <div className="space-y-1">
+              <div className="px-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Çizim & Silme
+              </div>
+
+              {/* Parsel / Poligon Çiz */}
+              <button
+                type="button"
+                onClick={() => handleToggleDrawPolygon()}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  activeDrawTool === 'polygon'
+                    ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Haritada yeni parsel veya poligon çizin (Tekrar tıklayarak kapatabilirsiniz)"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Shapes className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${activeDrawTool === 'polygon' ? 'text-white' : 'text-blue-400'}`} />
+                  <span className="text-[11px] truncate">Parsel Çiz</span>
+                </div>
+                {activeDrawTool === 'polygon' && (
+                  <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+
+              {/* İmar Yolu / Çizgi Çiz */}
+              <button
+                type="button"
+                onClick={() => handleToggleDrawLine()}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  activeDrawTool === 'line'
+                    ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Harita üzerine imar yolu veya referans çizgisi çizin (Tekrar tıklayarak kapatabilirsiniz)"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Spline className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${activeDrawTool === 'line' ? 'text-slate-950' : 'text-amber-400'}`} />
+                  <span className="text-[11px] truncate">Yol Çiz</span>
+                </div>
+                {activeDrawTool === 'line' && (
+                  <span className="text-[9px] bg-amber-600 text-slate-950 px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+
+              {/* Sil (Parsel / Çizgi) */}
+              <button
+                type="button"
+                onClick={() => handleToggleRemovalMode()}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  activeDrawTool === 'delete'
+                    ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
+                    : 'text-slate-300 hover:text-rose-200 hover:bg-rose-500/15'
+                }`}
+                title="Silme modu: Silmek istediğiniz parsel veya yol çizgisine haritada tıklayın"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Trash2 className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${activeDrawTool === 'delete' ? 'text-white' : 'text-rose-400'}`} />
+                  <span className="text-[11px] truncate">Sil</span>
+                </div>
+                <span
+                  className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0 ${
+                    activeDrawTool === 'delete' ? 'bg-rose-700 text-white' : 'text-rose-300/80 bg-rose-500/10'
+                  }`}
+                >
+                  {activeDrawTool === 'delete' ? 'KAPAT' : 'SİL'}
+                </span>
+              </button>
+            </div>
+
+            <div className="h-px bg-white/[0.08] mx-1" />
+
+            {/* Başlık 2: CAD Düzenleme */}
+            <div className="space-y-1">
+              <div className="px-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                CAD Düzenleme
+              </div>
+
+              {/* CAD Köşe Düzenle */}
+              <button
+                type="button"
+                onClick={() => handleToggleCadVertex()}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'
+                    ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
+                    : mapSettings.cadModeActive
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="CAD Köşe Düzenleme Modu (Vertex Edit): Parsel köşelerini sürükleyerek şekillendirin"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Crosshair className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' ? 'text-slate-950' : 'text-emerald-400'}`} />
+                  <span className="text-[11px] truncate">CAD Düzenle</span>
+                </div>
+                {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' && (
+                  <span className="text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+
+              {/* CAD Bıçağı */}
+              <button
+                type="button"
+                onClick={() => handleToggleCadSlice()}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice'
+                    ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="CAD Bıçağı: Parselin üzerinden geçen serbest çizgi çizerek bölün"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Scissors className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' ? 'text-white' : 'text-rose-400'}`} />
+                  <span className="text-[11px] truncate">CAD Bıçağı</span>
+                </div>
+                {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' && (
+                  <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+
+              {/* Sürükle-Bırak Tevhit */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (onToggleDragMerge) onToggleDragMerge();
+                }}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  mapSettings.enableDragMerge
+                    ? 'bg-purple-600 text-white font-bold shadow-md shadow-purple-600/30 border border-purple-400/40'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title={
+                  mapSettings.enableDragMerge
+                    ? 'Sürükle-Bırak Tevhit Aktif: Birleştirmek için parseli diğerinin üzerine sürükleyin'
+                    : 'Sürükle-Bırak Tevhit Modunu Aç'
+                }
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Layers className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${mapSettings.enableDragMerge ? 'text-white' : 'text-purple-400'}`} />
+                  <span className="text-[11px] truncate">Sürükle Tevhit</span>
+                </div>
+                {mapSettings.enableDragMerge && (
+                  <span className="text-[9px] bg-purple-900/90 text-purple-200 px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+
+              {/* Köşe Koordinatları Tablosu */}
+              <button
+                type="button"
+                onClick={() => setShowVertexTable((prev) => !prev)}
+                className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                  showVertexTable
+                    ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
+                    : 'text-slate-300 hover:text-white hover:bg-white/10'
+                }`}
+                title="Seçili Parsel Köşe Koordinatları Tablosunu Göster/Gizle"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <Table className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${showVertexTable ? 'text-white' : 'text-blue-400'}`} />
+                  <span className="text-[11px] truncate">Koordinatlar</span>
+                </div>
+                {showVertexTable && (
+                  <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold shrink-0">
+                    KAPAT
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="h-px bg-white/[0.08] mx-1" />
+
+            {/* Başlık 3: Sorgu & Analiz */}
+            <div className="space-y-1">
+              <div className="px-1.5 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Sorgu & Analiz
+              </div>
+
+              {/* Obje Sor */}
+              {onToggleObjectQuery && (
+                <button
+                  type="button"
+                  onClick={() => onToggleObjectQuery()}
+                  className={`w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
+                    isObjectQueryActive
+                      ? 'bg-cyan-500 text-slate-950 font-bold shadow-md shadow-cyan-500/30'
+                      : 'text-slate-300 hover:text-white hover:bg-white/10'
+                  }`}
+                  title="Haritada parsel, yol veya koordinat tıklayarak obje bilgilerini sorgulayın"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Info className={`w-3.5 h-3.5 stroke-[2] shrink-0 ${isObjectQueryActive ? 'text-slate-950' : 'text-cyan-400'}`} />
+                    <span className="text-[11px] truncate">Obje Sor</span>
+                  </div>
+                  <span
+                    className={`text-[9px] px-1.5 py-0.5 rounded font-mono font-bold shrink-0 ${
+                      isObjectQueryActive ? 'bg-cyan-800 text-white' : 'text-cyan-300 bg-cyan-500/15'
+                    }`}
+                  >
+                    {isObjectQueryActive ? 'KAPAT' : 'SOR'}
+                  </span>
+                </button>
+              )}
+
+              {/* Zemin Sınıfı (TBDY 2018) */}
+              {onOpenSoilAnalysis && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSoilAnalysis('soil')}
+                  className="w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 text-slate-300 hover:text-white hover:bg-amber-500/15"
+                  title="TBDY 2018 Zemin Sınıfları (ZA-ZF), Vs30, Taşıma Gücü ve Jeoteknik Raporu"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Mountain className="w-3.5 h-3.5 stroke-[2] shrink-0 text-amber-400" />
+                    <span className="text-[11px] truncate">Zemin Sınıfı</span>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold bg-amber-400/20 text-amber-300 border border-amber-400/30 shrink-0">
+                    ZA-ZF
+                  </span>
+                </button>
+              )}
+
+              {/* Topoğrafik Eğim */}
+              {onOpenSoilAnalysis && (
+                <button
+                  type="button"
+                  onClick={() => onOpenSoilAnalysis('slope')}
+                  className="w-full h-8 px-2.5 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 text-slate-300 hover:text-white hover:bg-emerald-500/15"
+                  title="Topoğrafik Eğim, Kot Farkı, Açığa Çıkan Katlar ve Uygunluk Raporu"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <TrendingUp className="w-3.5 h-3.5 stroke-[2] shrink-0 text-emerald-400" />
+                    <span className="text-[11px] truncate">Topoğrafik Eğim</span>
+                  </div>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded font-mono font-bold bg-emerald-400/20 text-emerald-300 border border-emerald-400/30 shrink-0">
+                    UÖ/ÖA
+                  </span>
+                </button>
+              )}
+            </div>
           </div>
-
-          {/* Parsel / Poligon Çiz */}
-          <button
-            onClick={() => handleToggleDrawPolygon()}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              activeDrawTool === 'polygon'
-                ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="Haritada yeni parsel veya poligon çizin (Tekrar tıklayarak kapatabilirsiniz)"
-          >
-            <div className="flex items-center gap-1.5">
-              <Shapes className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'polygon' ? 'text-white' : 'text-blue-400'}`} />
-              <span className="text-[11px]">Parsel Çiz</span>
-            </div>
-            {activeDrawTool === 'polygon' && (
-              <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-
-          {/* İmar Yolu / Çizgi Çiz */}
-          <button
-            onClick={() => handleToggleDrawLine()}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              activeDrawTool === 'line'
-                ? 'bg-amber-500 text-slate-950 font-bold shadow-md shadow-amber-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="Harita üzerine imar yolu veya referans çizgisi çizin (Tekrar tıklayarak kapatabilirsiniz)"
-          >
-            <div className="flex items-center gap-1.5">
-              <Spline className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'line' ? 'text-slate-950' : 'text-amber-400'}`} />
-              <span className="text-[11px]">Yol Çiz</span>
-            </div>
-            {activeDrawTool === 'line' && (
-              <span className="text-[9px] bg-amber-600 text-slate-950 px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-
-          {/* Katman / Parsel Sil */}
-          <button
-            onClick={() => handleToggleRemovalMode()}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              activeDrawTool === 'delete'
-                ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="Silme modu: Silmek istediğiniz parsel veya çizgiye haritada tıklayın"
-          >
-            <div className="flex items-center gap-1.5">
-              <Trash2 className={`w-3.5 h-3.5 stroke-[2] ${activeDrawTool === 'delete' ? 'text-white' : 'text-rose-400'}`} />
-              <span className="text-[11px]">Sil</span>
-            </div>
-            {activeDrawTool === 'delete' && (
-              <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
         </div>
-
-        <div className="h-px bg-white/[0.08] my-1.5 mx-0.5" />
-
-        {/* Grup 2: CAD & Tevhit Araçları */}
-        <div className="space-y-1">
-          <div className="px-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            CAD & Tevhit
-          </div>
-
-          {/* CAD Köşe Düzenle */}
-          <button
-            onClick={() => handleToggleCadVertex()}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex'
-                ? 'bg-emerald-500 text-slate-950 font-bold shadow-md shadow-emerald-500/30'
-                : mapSettings.cadModeActive
-                ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="CAD Köşe Düzenleme Modu (Vertex Edit): Parsel köşelerini sürükleyerek şekillendirin"
-          >
-            <div className="flex items-center gap-1.5">
-              <Crosshair className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' ? 'text-slate-950' : 'text-emerald-400'}`} />
-              <span className="text-[11px]">CAD Düzenle</span>
-            </div>
-            {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'vertex' && (
-              <span className="text-[9px] bg-emerald-700 text-white px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-
-          {/* CAD Bıçağı */}
-          <button
-            onClick={() => handleToggleCadSlice()}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice'
-                ? 'bg-rose-500 text-white font-bold shadow-md shadow-rose-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="CAD Bıçağı: Parselin üzerinden geçen serbest çizgi çizerek bölün"
-          >
-            <div className="flex items-center gap-1.5">
-              <Scissors className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' ? 'text-white' : 'text-rose-400'}`} />
-              <span className="text-[11px]">CAD Bıçağı</span>
-            </div>
-            {mapSettings.cadModeActive && mapSettings.cadActiveTool === 'slice' && (
-              <span className="text-[9px] bg-rose-700 text-white px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-
-          {/* Sürükle-Bırak Tevhit */}
-          <button
-            onClick={() => {
-              if (onToggleDragMerge) onToggleDragMerge();
-            }}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              mapSettings.enableDragMerge
-                ? 'bg-purple-600 text-white font-bold shadow-md shadow-purple-600/30 border border-purple-400/40'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title={
-              mapSettings.enableDragMerge
-                ? 'Sürükle-Bırak Tevhit Aktif: Birleştirmek için parseli diğerinin üzerine sürükleyin'
-                : 'Sürükle-Bırak Tevhit Modunu Aç'
-            }
-          >
-            <div className="flex items-center gap-1.5">
-              <Layers className={`w-3.5 h-3.5 stroke-[2] ${mapSettings.enableDragMerge ? 'text-white' : 'text-purple-400'}`} />
-              <span className="text-[11px]">Sürükle Tevhit</span>
-            </div>
-            {mapSettings.enableDragMerge && (
-              <span className="text-[9px] bg-purple-900/90 text-purple-200 px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-
-          {/* Köşe Koordinatları Tablosu */}
-          <button
-            onClick={() => setShowVertexTable((prev) => !prev)}
-            className={`w-full h-8 px-2 rounded-xl text-xs font-medium transition flex items-center justify-between active:scale-95 ${
-              showVertexTable
-                ? 'bg-blue-500 text-white font-bold shadow-md shadow-blue-500/30'
-                : 'text-slate-300 hover:text-white hover:bg-white/10'
-            }`}
-            title="Seçili Parsel Köşe Koordinatları Tablosunu Göster/Gizle"
-          >
-            <div className="flex items-center gap-1.5">
-              <Table className={`w-3.5 h-3.5 stroke-[2] ${showVertexTable ? 'text-white' : 'text-blue-400'}`} />
-              <span className="text-[11px]">Koordinatlar</span>
-            </div>
-            {showVertexTable && (
-              <span className="text-[9px] bg-blue-700 text-white px-1.5 py-0.5 rounded font-bold">
-                KAPAT
-              </span>
-            )}
-          </button>
-        </div>
-      </div>
       )}
 
       {/* ================= AYRI SÜRÜKLENEBİLİR GÖRÜNÜRLÜK PANELİ ================= */}
@@ -2926,7 +3340,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       {/* Aktif Çizim / Silme Bilgilendirme ve Dinamik Ölçü HUD Rozeti */}
       {activeDrawTool && (
-        <div className="absolute top-16 right-52 z-[990] flex flex-col items-end gap-2 animate-in fade-in slide-in-from-top-1 pointer-events-none">
+        <div className="absolute top-16 right-64 z-[990] flex flex-col items-end gap-2 animate-in fade-in slide-in-from-top-1 pointer-events-none">
           {/* Ana Bilgi Rozeti */}
           <div className="h-8 px-3.5 bg-slate-900/90 backdrop-blur-xl border border-white/20 text-white text-xs font-medium rounded-full flex items-center gap-2 shadow-lg pointer-events-auto">
             <div
@@ -3023,7 +3437,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       {/* Sürükle-Bırak Tevhit Aktif Bilgilendirme Rozeti */}
       {mapSettings.enableDragMerge && (
-        <div className="absolute top-16 right-44 z-[990] h-8 px-3.5 bg-purple-950/85 backdrop-blur-xl border border-purple-500/40 text-purple-200 text-xs font-medium rounded-full flex items-center gap-2 shadow-lg shadow-purple-900/30 animate-in fade-in slide-in-from-top-1">
+        <div className="absolute top-16 right-64 z-[990] h-8 px-3.5 bg-purple-950/85 backdrop-blur-xl border border-purple-500/40 text-purple-200 text-xs font-medium rounded-full flex items-center gap-2 shadow-lg shadow-purple-900/30 animate-in fade-in slide-in-from-top-1">
           <div className="w-2 h-2 rounded-full bg-purple-400 animate-pulse" />
           <span>Sürükle-Bırak Tevhit Aktif: Parseli diğerinin üzerine bırakın</span>
           <button
@@ -3425,6 +3839,230 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                 </>
               )}
             </button>
+          </div>
+        </div>
+      )}
+      {/* Floating Obje Sor Bar & Inspection Card */}
+      {isObjectQueryActive && (
+        <div className="no-print absolute top-16 left-1/2 -translate-x-1/2 z-[1000] h-9 px-4 bg-cyan-500 text-slate-950 font-semibold rounded-full flex items-center gap-2.5 shadow-[0_12px_36px_rgba(6,182,212,0.4)] animate-in fade-in slide-in-from-top-2">
+          <Info className="w-4 h-4 stroke-[2.5] animate-pulse" />
+          <span className="text-xs font-bold whitespace-nowrap">
+            Obje Sor Aktif: Haritada parsel, yol veya koordinat tıklayın
+          </span>
+          {onToggleObjectQuery && (
+            <button
+              type="button"
+              onClick={() => {
+                onToggleObjectQuery();
+                setInspectedObject(null);
+              }}
+              className="h-6 px-2.5 bg-slate-950 text-cyan-300 hover:bg-slate-900 text-[11px] font-bold rounded-full flex items-center gap-1 transition"
+            >
+              <Check className="w-3 h-3 stroke-[3]" />
+              <span>Kapat</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {inspectedObject && (
+        <div className="no-print fixed bottom-16 right-4 z-[1005] w-80 max-w-[92vw] apple-glass rounded-2xl p-3.5 shadow-[0_24px_60px_rgba(0,0,0,0.65)] border border-cyan-400/35 text-white space-y-2.5 animate-in fade-in slide-in-from-bottom-2 duration-150">
+          <div className="flex items-start justify-between gap-2 border-b border-white/[0.08] pb-2">
+            <div className="flex items-start gap-2 min-w-0">
+              <div className="w-7 h-7 rounded-xl bg-cyan-500/20 border border-cyan-400/30 flex items-center justify-center shrink-0 mt-0.5">
+                {inspectedObject.kind === 'map-point' ? (
+                  <MapPin className="w-3.5 h-3.5 text-cyan-300" />
+                ) : (
+                  <Info className="w-3.5 h-3.5 text-cyan-300" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white truncate">{inspectedObject.title}</div>
+                {inspectedObject.subtitle && (
+                  <div className="text-[10px] text-cyan-300 font-medium truncate">{inspectedObject.subtitle}</div>
+                )}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setInspectedObject(null)}
+              className="w-6 h-6 rounded-full flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/10 transition shrink-0"
+              title="Obje Bilgisini Kapat"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          {/* Kadastral Konum */}
+          {(inspectedObject.il || inspectedObject.adaNo || inspectedObject.parselNo) && (
+            <div className="px-2.5 py-1.5 rounded-xl bg-white/[0.05] border border-white/[0.08] text-[10.5px] flex items-center justify-between gap-2">
+              <span className="text-slate-300 truncate">
+                {[inspectedObject.il, inspectedObject.ilce, inspectedObject.mahalle].filter(Boolean).join(' / ')}
+              </span>
+              {(inspectedObject.adaNo || inspectedObject.parselNo) && (
+                <span className="font-mono font-bold text-amber-300 shrink-0">
+                  {inspectedObject.adaNo}/{inspectedObject.parselNo}
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Temel Metrikler */}
+          <div className="grid grid-cols-2 gap-1.5 text-[11px]">
+            {inspectedObject.areaM2 !== undefined && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                <div className="text-[9px] text-slate-400 uppercase font-semibold">Alan</div>
+                <div className="font-mono font-bold text-emerald-400">
+                  {inspectedObject.areaM2.toLocaleString('tr-TR', { maximumFractionDigits: 2 })} m²
+                </div>
+              </div>
+            )}
+            {inspectedObject.perimeterM !== undefined && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                <div className="text-[9px] text-slate-400 uppercase font-semibold">Çevre</div>
+                <div className="font-mono font-bold text-sky-300">
+                  {inspectedObject.perimeterM.toFixed(2)} m
+                </div>
+              </div>
+            )}
+            {inspectedObject.lengthM !== undefined && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                <div className="text-[9px] text-slate-400 uppercase font-semibold">Uzunluk</div>
+                <div className="font-mono font-bold text-amber-300">
+                  {inspectedObject.lengthM.toFixed(2)} m
+                </div>
+              </div>
+            )}
+            {inspectedObject.vertexCount !== undefined && (
+              <div className="px-2.5 py-1.5 rounded-xl bg-white/[0.04] border border-white/[0.06]">
+                <div className="text-[9px] text-slate-400 uppercase font-semibold">Köşe Sayısı</div>
+                <div className="font-mono font-bold text-slate-200">{inspectedObject.vertexCount} Nokta</div>
+              </div>
+            )}
+          </div>
+
+          {/* Tıklanan Nokta Koordinatları (WGS84 & TUREF TM3) */}
+          {(() => {
+            const [lat, lng] = inspectedObject.latlng;
+            const dom = getAutoTurefDom(lng);
+            const turef = formatCoordinateInSystem(lng, lat, 'TUREF_TM3', dom);
+            return (
+              <div className="px-2.5 py-1.5 rounded-xl bg-black/30 border border-white/[0.07] font-mono text-[10px] space-y-0.5">
+                <div className="flex items-center justify-between text-slate-300">
+                  <span className="text-slate-400">WGS84:</span>
+                  <span>
+                    {lat.toFixed(6)}, {lng.toFixed(6)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-cyan-300">
+                  <span className="text-slate-400">TM{dom} (Y / X):</span>
+                  <span>
+                    {turef.xFormatted} / {turef.yFormatted}
+                  </span>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Kenar Uzunlukları */}
+          {inspectedObject.edgeLengthsM && inspectedObject.edgeLengthsM.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-[9.5px] text-slate-400 uppercase font-bold tracking-wider">Kenar Uzunlukları</div>
+              <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
+                {inspectedObject.edgeLengthsM.map((len, idx) => (
+                  <span
+                    key={idx}
+                    className="px-1.5 py-0.5 rounded-md bg-white/[0.06] border border-white/[0.08] font-mono text-[10px] text-slate-200"
+                  >
+                    K{idx + 1}: <b className="text-purple-300">{len.toFixed(2)}m</b>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Zemin & Topoğrafik Eğim Özeti */}
+          {(inspectedObject.soilClass || inspectedObject.avgSlopePercent !== undefined) && (
+            <div className="grid grid-cols-2 gap-1.5 text-[10.5px]">
+              {inspectedObject.soilClass && (
+                <div className="px-2 py-1.5 rounded-xl bg-amber-500/10 border border-amber-500/25">
+                  <div className="text-[9px] text-amber-300/80 uppercase font-bold">Zemin (TBDY)</div>
+                  <div className="font-mono font-bold text-amber-300">
+                    {inspectedObject.soilClass} · qa {inspectedObject.bearingCapacity}
+                  </div>
+                </div>
+              )}
+              {inspectedObject.avgSlopePercent !== undefined && (
+                <div className="px-2 py-1.5 rounded-xl bg-emerald-500/10 border border-emerald-500/25">
+                  <div className="text-[9px] text-emerald-300/80 uppercase font-bold">Topoğrafik Eğim</div>
+                  <div className="font-mono font-bold text-emerald-300">
+                    %{inspectedObject.avgSlopePercent} ({inspectedObject.aspect}) · ΔZ {inspectedObject.elevationDiffM}m
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Hızlı Sorgu & İşlem Butonları */}
+          <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-white/[0.08]">
+            {onOpenSoilAnalysis &&
+              (inspectedObject.kind === 'generated-parcel' ||
+                inspectedObject.kind === 'main-parcel' ||
+                inspectedObject.kind === 'secondary-parcel') && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => onOpenSoilAnalysis('soil', inspectedObject.id)}
+                    className="flex-1 h-7 px-2 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/30 text-amber-200 text-[10.5px] font-semibold flex items-center justify-center gap-1 transition"
+                  >
+                    <Mountain className="w-3 h-3" />
+                    <span>Zemin Sınıfı</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onOpenSoilAnalysis('slope', inspectedObject.id)}
+                    className="flex-1 h-7 px-2 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/30 text-emerald-200 text-[10.5px] font-semibold flex items-center justify-center gap-1 transition"
+                  >
+                    <TrendingUp className="w-3 h-3" />
+                    <span>Eğim Analizi</span>
+                  </button>
+                </>
+              )}
+
+            {onPickTkgmCoord && (
+              <button
+                type="button"
+                onClick={() => onPickTkgmCoord(inspectedObject.latlng[0], inspectedObject.latlng[1])}
+                className="h-7 px-2.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/30 text-cyan-200 text-[10.5px] font-semibold flex items-center justify-center gap-1 transition"
+                title="Bu koordinattaki parsel bilgisini TKGM'den sorgula"
+              >
+                <Landmark className="w-3 h-3" />
+                <span>TKGM'den Sor</span>
+              </button>
+            )}
+
+            {inspectedObject.kind !== 'map-point' && (
+              <button
+                type="button"
+                onClick={() => {
+                  if (inspectedObject.kind === 'generated-parcel' && inspectedObject.id) {
+                    onDeleteGeneratedParcelRef.current?.(inspectedObject.id);
+                  } else if (inspectedObject.kind === 'secondary-parcel' && inspectedObject.id) {
+                    onDeleteSecondaryParcelRef.current?.(inspectedObject.id);
+                  } else if (inspectedObject.kind === 'road-line' && inspectedObject.roadIndex !== undefined) {
+                    onDeleteRoadLineRef.current?.(inspectedObject.roadIndex);
+                  } else if (inspectedObject.kind === 'main-parcel') {
+                    onClearMainPolygonRef.current?.();
+                  }
+                  setInspectedObject(null);
+                }}
+                className="h-7 px-2.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-400/30 text-rose-200 text-[10.5px] font-semibold flex items-center justify-center gap-1 transition"
+                title="Seçili objeyi sil"
+              >
+                <Trash2 className="w-3 h-3" />
+                <span>Sil</span>
+              </button>
+            )}
           </div>
         </div>
       )}
