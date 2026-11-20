@@ -147,6 +147,8 @@ export interface SubdivisionConfig {
   manualPlanNoteHmax?: string;
 }
 
+export type AppFontFamily = 'sf-pro' | 'inter' | 'jakarta' | 'ibm-plex' | 'mono';
+
 export interface MapSettings {
   tileProvider: 'googleHybrid' | 'googleSatellite' | 'osm';
   showFill: boolean;
@@ -163,6 +165,7 @@ export interface MapSettings {
   cadActiveTool: 'select' | 'vertex' | 'slice';
   showRoadFrontageHighlight?: boolean;
   theme: 'dark' | 'light'; // Gece / Gündüz modu
+  fontFamily?: AppFontFamily; // San Francisco (SF Pro) ve arayüz yazı tipi ailesi
   uiOpacity: number; // 30 - 100 (%) panel saydamlığı
   uiScale?: number; // 90 - 130 (%) buton ve yazı ölçeklendirme / büyütme
   parcelFillOpacity: number; // 0 - 80 (%) parsel dolgu saydamlığı

@@ -42,13 +42,15 @@ import {
   Crosshair,
   RotateCw,
   Landmark,
-  GripHorizontal
+  GripHorizontal,
+  FileCode
 } from 'lucide-react';
 import type { Feature, LineString } from 'geojson';
 import { GeneratedParcel, MapSettings, StatsSummary, SubdivisionConfig } from '../types';
 import { ParcelEdge, calculateMultiEdgeFrontage } from '../utils/geometryOptimizer';
 import { useServiceWorkerUpdate } from '../hooks/useServiceWorkerUpdate';
 import { usePWAInstall } from '../hooks/usePWAInstall';
+import { APP_FONT_OPTIONS, getFontFamilyOption, getNextFontFamily } from '../utils/uiAppearance';
 
 interface ControlPanelProps {
   config: SubdivisionConfig;
@@ -67,6 +69,8 @@ interface ControlPanelProps {
   onExportKML: () => void;
   onExportGeoJSON: () => void;
   onExportCSV: () => void;
+  onExportHTML?: () => void;
+  isExportingHtml?: boolean;
   onReset: () => void;
   onUpdateParcelAttributes: (parcelId: string, attrs: any) => void;
   statusMessage?: string;
@@ -128,6 +132,8 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   onExportKML,
   onExportGeoJSON,
   onExportCSV,
+  onExportHTML,
+  isExportingHtml = false,
   onReset,
   onOpenPrintModal,
   onRecalculate,
@@ -249,11 +255,14 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
   const multiFrontage = calculateMultiEdgeFrontage(mainPolygonEdges, selectedFrontageEdgeIndices);
 
   const currentBaseMapOption = BASEMAP_OPTIONS.find((opt) => opt.id === mapSettings.tileProvider) || BASEMAP_OPTIONS[0];
+  const currentFontOption = getFontFamilyOption(mapSettings.fontFamily);
+  const nextFontOption = getNextFontFamily(mapSettings.fontFamily);
+  const isLightTheme = mapSettings.theme === 'light';
 
   return (
     <>
       {/* ================= APPLE DYNAMIC ISLAND TOP ACTION BAR ================= */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] h-11 px-3.5 apple-glass rounded-full flex items-center gap-2 text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.45)] transition-all animate-in fade-in slide-in-from-top-2 duration-200">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[1000] max-w-[96vw] h-11 px-3 apple-glass rounded-full flex items-center gap-1.5 text-slate-100 shadow-[0_12px_40px_rgba(0,0,0,0.45)] transition-all animate-in fade-in slide-in-from-top-2 duration-200">
         {/* Undo / Redo */}
         <button
           onClick={onUndo}
@@ -372,6 +381,23 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 </span>
                 <span className="text-[10px] text-slate-400 font-mono">.csv</span>
               </button>
+              {onExportHTML && (
+                <button
+                  type="button"
+                  disabled={isExportingHtml}
+                  onClick={() => {
+                    setShowSaveAsMenu(false);
+                    onExportHTML();
+                  }}
+                  className="w-full bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 hover:text-white text-xs py-2 px-2.5 rounded-xl flex items-center justify-between border border-cyan-400/30 transition text-left disabled:opacity-50"
+                >
+                  <span className="flex items-center gap-2">
+                    <FileCode className="w-3.5 h-3.5 text-cyan-400 stroke-[2]" />
+                    <span>{isExportingHtml ? 'HTML Hazırlanıyor...' : 'Tam Uygulama (Tek Dosya)'}</span>
+                  </span>
+                  <span className="text-[10px] bg-cyan-500/25 text-cyan-200 px-1.5 py-0.5 rounded font-mono">.html</span>
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -519,38 +545,78 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                 </button>
               </div>
 
-              {/* Görünüm & Tema: Gece / Gündüz */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider block">Tema</label>
-                <div className="bg-white/[0.04] p-1 rounded-xl border border-white/[0.06] grid grid-cols-2 gap-1.5">
-                  <button
-                    onClick={() => {
-                      handleSettingChange('theme', 'dark');
-                      setShowSettingsMenu(false);
-                    }}
-                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
-                      mapSettings.theme === 'dark'
-                        ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <Moon className="w-3.5 h-3.5 text-blue-400 stroke-[2]" />
-                    <span>Gece Modu</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      handleSettingChange('theme', 'light');
-                      setShowSettingsMenu(false);
-                    }}
-                    className={`py-1.5 px-2 rounded-lg text-center transition text-xs font-medium flex items-center justify-center gap-1.5 ${
-                      mapSettings.theme === 'light'
-                        ? 'bg-white/15 text-white shadow-sm border border-white/10 font-bold'
-                        : 'text-slate-400 hover:text-slate-200 hover:bg-white/[0.03]'
-                    }`}
-                  >
-                    <Sun className="w-3.5 h-3.5 text-amber-400 stroke-[2]" />
-                    <span>Gündüz Modu</span>
-                  </button>
+              {/* Tek Tuş Hızlı Görünüm İkonları: Gece/Gündüz & Yazı Tipi */}
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleSettingChange('theme', isLightTheme ? 'dark' : 'light')}
+                  className={`h-8 px-2.5 rounded-xl text-xs font-semibold transition flex items-center justify-center gap-1.5 active:scale-95 border ${
+                    isLightTheme
+                      ? 'bg-amber-500 text-slate-950 border-amber-300 shadow-sm'
+                      : 'bg-white/10 hover:bg-white/15 text-slate-100 border-white/15'
+                  }`}
+                  title={
+                    isLightTheme
+                      ? 'Gündüz Modu Aktif — Tek tuşla Gece Moduna geç'
+                      : 'Gece Modu Aktif — Tek tuşla Gündüz Moduna geç'
+                  }
+                >
+                  {isLightTheme ? (
+                    <>
+                      <Sun className="w-3.5 h-3.5 text-slate-950 stroke-[2.2]" />
+                      <span>Gündüz</span>
+                    </>
+                  ) : (
+                    <>
+                      <Moon className="w-3.5 h-3.5 text-amber-300 stroke-[2]" />
+                      <span>Gece</span>
+                    </>
+                  )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handleSettingChange('fontFamily', nextFontOption.id)}
+                  className="h-8 px-2.5 rounded-xl bg-white/10 hover:bg-white/15 text-slate-100 text-xs font-medium transition flex items-center justify-center gap-1.5 active:scale-95 border border-white/15"
+                  title={`Yazı Tipi: ${currentFontOption.label} — Tek tuşla değiştir (Sonraki: ${nextFontOption.label})`}
+                >
+                  <Type className="w-3.5 h-3.5 text-cyan-400 stroke-[2]" />
+                  <span className="truncate">{currentFontOption.shortLabel}</span>
+                </button>
+              </div>
+
+              {/* Yazı Tipi Ailesi (San Francisco SF Pro & Arayüz) */}
+              <div className="space-y-1.5 pt-2 border-t border-white/[0.08]">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                    <Type className="w-3 h-3 text-cyan-400" />
+                    <span>Yazı Tipi Ailesi</span>
+                  </label>
+                  <span className="text-[10px] font-medium text-cyan-300">{currentFontOption.label}</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1 bg-white/[0.04] p-1 rounded-xl border border-white/[0.06]">
+                  {APP_FONT_OPTIONS.map((fontOpt) => {
+                    const isSelected = currentFontOption.id === fontOpt.id;
+                    return (
+                      <button
+                        key={fontOpt.id}
+                        type="button"
+                        onClick={() => {
+                          handleSettingChange('fontFamily', fontOpt.id);
+                          setShowSettingsMenu(false);
+                        }}
+                        style={{ fontFamily: fontOpt.cssFamily }}
+                        className={`py-1.5 px-1.5 rounded-lg text-center transition text-[11px] truncate ${
+                          isSelected
+                            ? 'bg-cyan-500 text-slate-950 font-bold shadow-sm'
+                            : 'text-slate-300 hover:text-white hover:bg-white/[0.06]'
+                        }`}
+                        title={fontOpt.description}
+                      >
+                        {fontOpt.shortLabel}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -731,6 +797,22 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
                     )}
                   </div>
                 )}
+
+                {onExportHTML && (
+                  <button
+                    type="button"
+                    disabled={isExportingHtml}
+                    onClick={() => {
+                      setShowSettingsMenu(false);
+                      onExportHTML();
+                    }}
+                    className="w-full py-2 px-3 bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 hover:text-white font-semibold rounded-xl transition text-xs flex items-center justify-center gap-2 border border-cyan-400/35 active:scale-95 disabled:opacity-50"
+                    title="Uygulamanın tamamını tek bir bağımsız HTML dosyası olarak indirin"
+                  >
+                    <FileCode className="w-3.5 h-3.5 text-cyan-400 stroke-[2]" />
+                    <span>{isExportingHtml ? 'HTML Hazırlanıyor...' : 'Uygulamayı HTML İndir (.html)'}</span>
+                  </button>
+                )}
               </div>
 
               {/* Görünürlük Katmanları */}
@@ -845,7 +927,7 @@ export const ControlPanel: React.FC<ControlPanelProps> = ({
           ref={ifrazPanelRef}
           onPointerDown={handleIfrazDragStart}
           style={{ left: `${ifrazPos.x}px`, top: `${ifrazPos.y}px` }}
-          className="fixed z-[990] h-11 px-2.5 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-1.5 transition hover:bg-slate-900/90 shadow-lg border border-white/15 cursor-grab active:cursor-grabbing select-none touch-none"
+          className="fixed z-[990] h-11 px-2.5 apple-glass text-white font-medium text-xs rounded-full flex items-center gap-1.5 transition hover:border-white/30 shadow-lg border border-white/15 cursor-grab active:cursor-grabbing select-none touch-none"
           title="Sürükleyerek taşıyabilir veya tıklayarak İfraz menüsünü açabilirsiniz"
         >
           <GripHorizontal className="w-3.5 h-3.5 text-slate-400 shrink-0" />

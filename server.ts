@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -398,6 +399,72 @@ app.get('/api/tkgm/parsel/:lat/:lng', async (req, res) => {
     properties: feature.properties || {},
     source: result.source,
   });
+});
+
+// ==================== STANDALONE SINGLE-FILE HTML EXPORT ====================
+let pendingStandaloneBuild: Promise<{ outputHtmlPath: string; html: string; sizeBytes: number }> | null = null;
+
+function getLatestSourceMtimeMs(dirPath: string): number {
+  let latest = 0;
+  if (!fs.existsSync(dirPath)) return latest;
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('dist')) continue;
+    const fullPath = path.join(dirPath, entry.name);
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      const subLatest = getLatestSourceMtimeMs(fullPath);
+      if (subLatest > latest) latest = subLatest;
+    } else if (stat.mtimeMs > latest) {
+      latest = stat.mtimeMs;
+    }
+  }
+  return latest;
+}
+
+app.get('/api/export-html', async (req, res) => {
+  try {
+    const standalonePath = path.resolve(__dirname, 'dist-standalone', 'izgoren-harita-uygulamasi.html');
+    const forceRefresh = req.query.refresh === '1';
+
+    let needsBuild = forceRefresh || !fs.existsSync(standalonePath);
+    if (!needsBuild) {
+      const outStat = fs.statSync(standalonePath);
+      const latestSrc = Math.max(
+        getLatestSourceMtimeMs(path.resolve(__dirname, 'src')),
+        fs.existsSync(path.resolve(__dirname, 'index.html'))
+          ? fs.statSync(path.resolve(__dirname, 'index.html')).mtimeMs
+          : 0
+      );
+      if (latestSrc > outStat.mtimeMs) {
+        needsBuild = true;
+      }
+    }
+
+    if (needsBuild) {
+      if (!pendingStandaloneBuild) {
+        pendingStandaloneBuild = (async () => {
+          const mod = await import('./scripts/build-standalone-html.mjs');
+          return mod.buildStandaloneHtml();
+        })().finally(() => {
+          pendingStandaloneBuild = null;
+        });
+      }
+      await pendingStandaloneBuild;
+    }
+
+    const htmlContent = fs.readFileSync(standalonePath, 'utf-8');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="Izgoren_Harita_Uygulamasi.html"');
+    res.setHeader('Cache-Control', 'no-store');
+    return res.send(htmlContent);
+  } catch (error: any) {
+    console.error('Standalone HTML export hatası:', error);
+    return res.status(500).json({
+      success: false,
+      error: error?.message || 'Uygulama HTML olarak paketlenirken bir hata oluştu.',
+    });
+  }
 });
 
 // Start dev server with Vite middlewares

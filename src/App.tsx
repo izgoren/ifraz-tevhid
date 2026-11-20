@@ -36,6 +36,7 @@ import {
 import { parseKMLToGeoJSON } from './utils/kmlParser';
 import { exportToCSV, exportToGeoJSON, exportToKML, triggerFileDownload } from './utils/kmlExporter';
 import { CadastralInfo, deriveCadastralLocation } from './utils/cadastralLocation';
+import { getFontFamilyOption } from './utils/uiAppearance';
 
 const DEFAULT_CONFIG: SubdivisionConfig = {
   pieceCount: 0,
@@ -94,6 +95,7 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   cadModeActive: false,
   cadActiveTool: 'vertex',
   theme: 'dark',
+  fontFamily: 'sf-pro',
   uiOpacity: 78,
   uiScale: 100,
   parcelFillOpacity: 45
@@ -117,6 +119,32 @@ export default function App() {
   const [roadLines, setRoadLines] = useState<Feature<LineString>[]>([]);
   const [config, setConfig] = useState<SubdivisionConfig>(DEFAULT_CONFIG);
   const [mapSettings, setMapSettings] = useState<MapSettings>(getStoredMapSettings);
+
+  // Sync Theme (Gündüz/Gece) & Font Family (SF Pro / UI Fonts) globally across document & portals
+  const activeFontOption = useMemo(() => getFontFamilyOption(mapSettings.fontFamily), [mapSettings.fontFamily]);
+
+  useEffect(() => {
+    const isLight = mapSettings.theme === 'light';
+    const root = document.documentElement;
+    const body = document.body;
+
+    root.classList.toggle('theme-light', isLight);
+    root.classList.toggle('theme-dark', !isLight);
+    root.classList.toggle('dark', !isLight);
+    root.classList.toggle('font-mode-mono', activeFontOption.id === 'mono');
+
+    body.classList.toggle('theme-light', isLight);
+    body.classList.toggle('theme-dark', !isLight);
+    body.classList.toggle('dark', !isLight);
+
+    root.style.setProperty('--app-font-family', activeFontOption.cssFamily);
+    body.style.fontFamily = activeFontOption.cssFamily;
+
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) {
+      themeMeta.setAttribute('content', isLight ? '#f1f5f9' : '#020617');
+    }
+  }, [mapSettings.theme, activeFontOption]);
   const [parcels, setParcels] = useState<GeneratedParcel[]>([]);
   const [selectedParcelIds, setSelectedParcelIds] = useState<string[]>([]);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState<boolean>(false);
@@ -131,6 +159,7 @@ export default function App() {
   } | null>(null);
   const [tkgmPickError, setTkgmPickError] = useState<string | null>(null);
   const [isSettingsSaved, setIsSettingsSaved] = useState<boolean>(false);
+  const [isExportingHtml, setIsExportingHtml] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
     'Lütfen başlamak için TKGM Parsel Sorgu barını kullanın, KML/GeoJSON yükleyin veya haritada parsel çizin.'
   );
@@ -1086,6 +1115,41 @@ export default function App() {
     triggerFileDownload(content, 'Tevhid_Ifraz_Koordinat_Listesi.csv', 'text/csv;charset=utf-8;');
   };
 
+  const handleExportHTML = useCallback(async () => {
+    if (isExportingHtml) return;
+    setIsExportingHtml(true);
+    setStatusMessage('Tek dosya HTML uygulaması hazırlanıyor, lütfen bekleyin...');
+    try {
+      if (window.location.protocol === 'file:') {
+        const clone = document.documentElement.cloneNode(true) as HTMLElement;
+        const rootEl = clone.querySelector('#root');
+        if (rootEl) rootEl.innerHTML = '';
+        const fullHtml = `<!doctype html>\n${clone.outerHTML}`;
+        triggerFileDownload(fullHtml, 'Izgoren_Harita_Uygulamasi.html', 'text/html;charset=utf-8;');
+        setStatusMessage('Uygulama tek dosya HTML olarak indirildi.');
+        return;
+      }
+
+      const res = await fetch('/api/export-html');
+      if (!res.ok) {
+        let errText = 'HTML çıktısı oluşturulamadı.';
+        try {
+          const errJson = await res.json();
+          if (errJson?.error) errText = errJson.error;
+        } catch {}
+        throw new Error(errText);
+      }
+
+      const htmlContent = await res.text();
+      triggerFileDownload(htmlContent, 'Izgoren_Harita_Uygulamasi.html', 'text/html;charset=utf-8;');
+      setStatusMessage('Uygulama tek dosya HTML (Izgoren_Harita_Uygulamasi.html) olarak indirildi.');
+    } catch (err: any) {
+      setStatusMessage(err?.message || 'HTML dışa aktarma başarısız oldu.');
+    } finally {
+      setIsExportingHtml(false);
+    }
+  }, [isExportingHtml]);
+
   // Soil & Slope Analysis Modal Handler
   const handleOpenSoilAnalysis = useCallback((parcel?: LoadedCadastralParcel | GeneratedParcel, tab: 'soil' | 'slope' = 'soil') => {
     if (parcel) {
@@ -1467,14 +1531,16 @@ export default function App() {
 
   return (
     <div
-      className={`relative w-screen h-screen overflow-hidden font-sans select-none transition-colors duration-200 ${
+      className={`relative w-screen h-screen overflow-hidden select-none transition-colors duration-200 ${
         mapSettings.theme === 'light'
           ? 'theme-light bg-slate-100 text-slate-900'
           : 'theme-dark bg-slate-950 text-slate-100'
-      }`}
+      } ${activeFontOption.id === 'mono' ? 'font-mode-mono' : ''}`}
       style={{
         ['--panel-opacity' as any]: (mapSettings.uiOpacity ?? 78) / 100,
         ['--ui-scale' as any]: `${(mapSettings.uiScale ?? 100) / 100}`,
+        ['--app-font-family' as any]: activeFontOption.cssFamily,
+        fontFamily: activeFontOption.cssFamily,
         fontSize: `${(mapSettings.uiScale ?? 100) / 100}rem`
       }}
     >
@@ -1603,6 +1669,8 @@ export default function App() {
         onExportKML={handleExportKML}
         onExportGeoJSON={handleExportGeoJSON}
         onExportCSV={handleExportCSV}
+        onExportHTML={handleExportHTML}
+        isExportingHtml={isExportingHtml}
         onReset={handleReset}
         onUpdateParcelAttributes={handleUpdateParcelAttributes}
         statusMessage={statusMessage}

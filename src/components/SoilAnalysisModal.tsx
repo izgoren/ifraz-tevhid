@@ -423,9 +423,9 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
 
   return (
     <div className="fixed inset-0 z-[2500] flex items-center justify-center p-3 sm:p-5 bg-slate-950/80 backdrop-blur-md animate-in fade-in duration-200">
-      <div className="relative w-full max-w-4xl max-h-[92vh] flex flex-col bg-slate-900/95 border border-white/15 rounded-3xl shadow-2xl text-slate-100 overflow-hidden">
+      <div className="relative w-full max-w-4xl max-h-[92vh] flex flex-col apple-glass border border-white/15 rounded-3xl shadow-2xl text-slate-100 overflow-hidden">
         {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-6 py-3.5 border-b border-white/10 bg-slate-900/70 gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-6 py-3.5 border-b border-white/10 bg-black/20 gap-3">
           <div className="flex items-center gap-3">
             <div className={`w-10 h-10 rounded-2xl flex items-center justify-center shadow-md transition-colors ${
               activeTab === 'slope'
@@ -497,8 +497,8 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
         </div>
 
         {/* Tab Navigation (Segmented Switcher) */}
-        <div className="px-6 py-2.5 border-b border-white/10 bg-slate-900/40 flex flex-wrap items-center justify-between gap-3">
-          <div className="inline-flex p-1 bg-slate-950/70 border border-white/10 rounded-2xl gap-1">
+        <div className="px-6 py-2.5 border-b border-white/10 bg-white/[0.03] flex flex-wrap items-center justify-between gap-3">
+          <div className="inline-flex p-1 bg-black/25 border border-white/10 rounded-2xl gap-1">
             <button
               onClick={() => setActiveTab('soil')}
               className={`px-4 py-1.5 rounded-xl text-xs font-semibold transition flex items-center gap-2 ${
@@ -579,7 +579,7 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
           {activeTab === 'soil' && (
             <div className="space-y-6">
               {/* Hero Zemin Sınıfı Kartı */}
-              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-800/90 via-slate-850/80 to-slate-900/90 border border-white/10 p-5 shadow-lg">
+              <div className="relative overflow-hidden rounded-2xl bg-white/[0.04] border border-white/10 p-5 shadow-lg">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
@@ -767,7 +767,7 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
               </div>
 
               {/* TBDY 2018 Tablo 16.1 Referans Tablosu (Açılır / Kapanır) */}
-              <div className="border border-white/10 rounded-2xl overflow-hidden bg-slate-900/40">
+              <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/20">
                 <button
                   onClick={() => setShowTableReference((prev) => !prev)}
                   className="w-full px-4 py-3 bg-white/[0.02] hover:bg-white/[0.05] flex items-center justify-between text-xs font-bold text-slate-300 transition"
@@ -855,7 +855,7 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
           {activeTab === 'slope' && (
             <div className="space-y-6">
               {/* Hero Eğim & Yerleşime Uygunluk Kartı */}
-              <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-slate-800/90 via-slate-850/80 to-slate-900/90 border border-white/10 p-5 shadow-lg">
+              <div className="relative overflow-hidden rounded-2xl bg-white/[0.04] border border-white/10 p-5 shadow-lg">
                 <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
                   <div className="space-y-2">
                     <div className="flex items-center gap-2">
@@ -1098,7 +1098,7 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
               </div>
 
               {/* Mekânsal Planlar & İller Bankası Eğim Standartları Referans Tablosu */}
-              <div className="border border-white/10 rounded-2xl overflow-hidden bg-slate-900/40">
+              <div className="border border-white/10 rounded-2xl overflow-hidden bg-black/20">
                 <button
                   onClick={() => setShowSlopeReference((prev) => !prev)}
                   className="w-full px-4 py-3 bg-white/[0.02] hover:bg-white/[0.05] flex items-center justify-between text-xs font-bold text-slate-300 transition"
@@ -1170,7 +1170,7 @@ ${settlement.code === 'AJE / UY' || settlement.code === 'ÖA-2'
         </div>
 
         {/* Footer */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-6 py-3.5 border-t border-white/10 bg-slate-900/80 gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between px-6 py-3.5 border-t border-white/10 bg-black/25 gap-3">
           <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>
