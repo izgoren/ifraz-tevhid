@@ -567,5 +567,8 @@
   user-select: none !important;
 }
 
-
-
+/* Google Street View Blue Roads Coverage Layer */
+.sv-coverage-tiles {
+  filter: saturate(1.2) brightness(1.05);
+  pointer-events: none !important;
+}

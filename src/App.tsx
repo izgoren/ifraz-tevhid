@@ -9,6 +9,7 @@ import { CadastralAttributeDrawer } from './components/CadastralAttributeDrawer'
 import { SoilAnalysisModal } from './components/SoilAnalysisModal';
 import { NewDrawnParcelModal } from './components/NewDrawnParcelModal';
 import { TkgmQueryBar, TkgmParcelProperties } from './components/TkgmQueryBar';
+import { StreetViewModal, StreetViewRequest, StreetViewCameraState } from './components/StreetViewModal';
 import { estimateSoilClassification, getSoilClassDetails } from './utils/soilEstimation';
 import { calculateParcelTopography } from './utils/topographicSlope';
 import { Info } from 'lucide-react';
@@ -90,6 +91,7 @@ const DEFAULT_MAP_SETTINGS: MapSettings = {
   showCadastre: true,
   showSlopeInfo: true,
   showSoilInfo: true,
+  showStreetViewCoverage: false,
   enableDragMerge: false,
   selectModeMerge: true,
   cadModeActive: false,
@@ -107,7 +109,12 @@ const getStoredMapSettings = (): MapSettings => {
     if (raw) {
       const parsed = JSON.parse(raw);
       if (parsed.mapSettings) {
-        return { ...DEFAULT_MAP_SETTINGS, ...parsed.mapSettings, enableDragMerge: false };
+        return {
+          ...DEFAULT_MAP_SETTINGS,
+          ...parsed.mapSettings,
+          showStreetViewCoverage: parsed.mapSettings.showStreetViewCoverage ?? false,
+          enableDragMerge: false
+        };
       }
     }
   } catch (e) {}
@@ -160,9 +167,21 @@ export default function App() {
   const [tkgmPickError, setTkgmPickError] = useState<string | null>(null);
   const [isSettingsSaved, setIsSettingsSaved] = useState<boolean>(false);
   const [isExportingHtml, setIsExportingHtml] = useState<boolean>(false);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState<boolean>(false);
+  const [streetViewRequest, setStreetViewRequest] = useState<StreetViewRequest | null>(null);
+  const [activeStreetViewCamera, setActiveStreetViewCamera] = useState<StreetViewCameraState | null>(null);
+  const [focusStreetViewTarget, setFocusStreetViewTarget] = useState<{ lat: number; lng: number; seq: number } | null>(null);
+  const [isStreetViewOpen, setIsStreetViewOpen] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string>(
     'Lütfen başlamak için TKGM Parsel Sorgu barını kullanın, KML/GeoJSON yükleyin veya haritada parsel çizin.'
   );
+
+  // Listen for Google Maps Platform Tier 1 & Tier 2 quota exhaustion events
+  useEffect(() => {
+    const handleQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', handleQuotaExceeded);
+  }, []);
 
   // Real Cadastral & Location Metadata (İl, İlçe, Mahalle, Ada, Parsel)
   const [cadastralInfo, setCadastralInfo] = useState<CadastralInfo>({
@@ -1544,6 +1563,24 @@ export default function App() {
         fontSize: `${(mapSettings.uiScale ?? 100) / 100}rem`
       }}
     >
+      {/* Google Maps Platform Quota Exceeded Banner (Section 8 Case A) */}
+      {gmpQuotaExceeded && (
+        <div className="no-print bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
+
       {/* Map Element */}
       <div className={`w-full h-full ${isPrintModalOpen ? 'no-print' : ''}`}>
         <MapContainer
@@ -1647,6 +1684,16 @@ export default function App() {
           onDeleteSecondaryParcel={handleDeleteSecondaryParcel}
           onDeleteRoadLine={handleDeleteRoadLine}
           onClearMainPolygon={handleClearMainPolygon}
+          onOpenStreetView={(loc) => {
+            setStreetViewRequest({ lat: loc.lat, lng: loc.lng, requestId: Date.now() });
+            setActiveStreetViewCamera({ lat: loc.lat, lng: loc.lng, heading: 0 });
+            setIsStreetViewOpen(true);
+            setStatusMessage(
+              `Sokak Görünümü açılıyor: ${loc.lat.toFixed(5)}, ${loc.lng.toFixed(5)}`
+            );
+          }}
+          activeStreetViewCamera={isStreetViewOpen ? activeStreetViewCamera : null}
+          focusStreetViewTarget={focusStreetViewTarget}
         />
       </div>
 
@@ -1846,6 +1893,20 @@ export default function App() {
           parselNo: cadastralInfo.parselNo
         }}
         onSaveParcel={handleSaveDrawnParcel}
+      />
+
+      {/* Google Street View 360° Overlay over Existing Base Map */}
+      <StreetViewModal
+        isOpen={isStreetViewOpen}
+        request={streetViewRequest}
+        onClose={() => {
+          setIsStreetViewOpen(false);
+          setActiveStreetViewCamera(null);
+        }}
+        onCameraStateChanged={(camState) => setActiveStreetViewCamera(camState)}
+        onFocusOnBaseMap={(loc) =>
+          setFocusStreetViewTarget({ lat: loc.lat, lng: loc.lng, seq: Date.now() })
+        }
       />
 
       {/* Dynamic Status / Bilgi Barı (Alt Ekran Apple-Glass Dinamik Ada) */}

@@ -113,6 +113,9 @@ interface MapContainerProps {
   onDeleteSecondaryParcel?: (parcelId: string) => void;
   onDeleteRoadLine?: (roadIndex: number) => void;
   onClearMainPolygon?: () => void;
+  onOpenStreetView?: (location: { lat: number; lng: number }) => void;
+  activeStreetViewCamera?: { lat: number; lng: number; heading: number } | null;
+  focusStreetViewTarget?: { lat: number; lng: number; seq: number } | null;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -165,7 +168,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onDeleteGeneratedParcel,
   onDeleteSecondaryParcel,
   onDeleteRoadLine,
-  onClearMainPolygon
+  onClearMainPolygon,
+  onOpenStreetView,
+  activeStreetViewCamera,
+  focusStreetViewTarget
 }) => {
   const mapRef = useRef<L.Map | null>(null);
   const mainLayerGroupRef = useRef<L.LayerGroup | null>(null);
@@ -181,6 +187,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const drawMeasurementsGroupRef = useRef<L.LayerGroup | null>(null);
   const cadGuideLayerGroupRef = useRef<L.LayerGroup | null>(null);
   const cadVertexLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const streetViewLayerRef = useRef<L.TileLayer | null>(null);
+  const streetViewMarkerGroupRef = useRef<L.LayerGroup | null>(null);
   const tileLayerRef = useRef<L.TileLayer | L.LayerGroup | null>(null);
   const skipFitBoundsRef = useRef<boolean>(false);
   const isPickingTkgmRef = useRef<boolean>(isPickingTkgmParcel);
@@ -197,6 +205,14 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onDeleteRoadLineRef.current = onDeleteRoadLine;
   const onClearMainPolygonRef = useRef(onClearMainPolygon);
   onClearMainPolygonRef.current = onClearMainPolygon;
+
+  const [isDraggingPegman, setIsDraggingPegman] = useState(false);
+  const [pegmanScreenPos, setPegmanScreenPos] = useState<{ x: number; y: number } | null>(null);
+  const [pegmanTiltDeg, setPegmanTiltDeg] = useState(0);
+  const [pegmanHoverLatLng, setPegmanHoverLatLng] = useState<{ lat: number; lng: number } | null>(null);
+  const [isStreetViewClickMode, setIsStreetViewClickMode] = useState(false);
+  const isStreetViewClickModeRef = useRef(false);
+  isStreetViewClickModeRef.current = isStreetViewClickMode;
 
   const [showVertexTable, setShowVertexTable] = useState(false);
   const [coordSystem, setCoordSystem] = useState<CoordinateSystemId>('TUREF_TM3');
@@ -691,7 +707,10 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       mapRef.current = map;
 
-      // Custom Panes for strict Z-index ordering
+      map.createPane('streetViewCoveragePane');
+      map.getPane('streetViewCoveragePane')!.style.zIndex = '350';
+      map.getPane('streetViewCoveragePane')!.style.pointerEvents = 'none';
+
       map.createPane('ifrazPane');
       map.getPane('ifrazPane')!.style.zIndex = '650';
 
@@ -729,6 +748,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       drawMeasurementsGroupRef.current = L.layerGroup().addTo(map);
       cadGuideLayerGroupRef.current = L.layerGroup().addTo(map);
       cadVertexLayerGroupRef.current = L.layerGroup().addTo(map);
+      streetViewMarkerGroupRef.current = L.layerGroup().addTo(map);
 
       // Translate Geoman Drawing Controls to Turkish
       try {
@@ -954,14 +974,16 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     }
   }, [onPolygonCreated, onRoadLineCreated, mapSettings.cadModeActive, mapSettings.cadActiveTool, cadActiveParcel, parcels, onParcelSliced]);
 
-  // Handle TKGM Map-Click, Obje Sor Query, and Sil Delete Cursor/Map Click
+  // Handle TKGM Map-Click, Obje Sor Query, Street View Click Mode, and Sil Delete Cursor/Map Click
   useEffect(() => {
     const map = mapRef.current;
     const container = map?.getContainer();
     if (!map) return;
 
     if (container) {
-      if (isPickingTkgmParcel) {
+      if (isStreetViewClickMode) {
+        container.style.cursor = 'crosshair';
+      } else if (isPickingTkgmParcel) {
         container.style.cursor = 'crosshair';
       } else if (isObjectQueryActive) {
         container.style.cursor = 'help';
@@ -974,6 +996,11 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
     const handleSpecialMapClick = (e: L.LeafletMouseEvent) => {
       if (!e.latlng) return;
+      if (isStreetViewClickMode) {
+        setIsStreetViewClickMode(false);
+        onOpenStreetView?.({ lat: e.latlng.lat, lng: e.latlng.lng });
+        return;
+      }
       if (isPickingTkgmParcel && onPickTkgmCoord) {
         onPickTkgmCoord(e.latlng.lat, e.latlng.lng);
         return;
@@ -988,7 +1015,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       }
     };
 
-    if (isPickingTkgmParcel || isObjectQueryActive) {
+    if (isStreetViewClickMode || isPickingTkgmParcel || isObjectQueryActive) {
       map.on('click', handleSpecialMapClick);
     }
     return () => {
@@ -997,7 +1024,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
         container.style.cursor = '';
       }
     };
-  }, [isPickingTkgmParcel, onPickTkgmCoord, isObjectQueryActive, activeDrawTool]);
+  }, [isStreetViewClickMode, isPickingTkgmParcel, onPickTkgmCoord, isObjectQueryActive, activeDrawTool, onOpenStreetView]);
 
   // Handle CAD Slice Tool Activation in Map
   useEffect(() => {
@@ -1054,6 +1081,170 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     tileLayerRef.current = newTileLayer;
   }, [mapSettings.tileProvider]);
 
+  // Show Blue Street View Coverage Overlay when clicking/dragging Pegman, while Street View is active, or when pinned via Görünürlük
+  const shouldShowBlueStreets =
+    isDraggingPegman ||
+    isStreetViewClickMode ||
+    Boolean(activeStreetViewCamera) ||
+    !!mapSettings.showStreetViewCoverage;
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    if (shouldShowBlueStreets) {
+      if (!streetViewLayerRef.current) {
+        streetViewLayerRef.current = L.tileLayer('https://mt1.google.com/vt/lyrs=svv&hl=tr&x={x}&y={y}&z={z}&style=5', {
+          maxZoom: 28,
+          maxNativeZoom: 18,
+          opacity: 0.96,
+          pane: 'streetViewCoveragePane',
+          className: 'sv-coverage-tiles',
+          attribution: 'Google Street View Coverage'
+        }).addTo(map);
+      } else if (!map.hasLayer(streetViewLayerRef.current)) {
+        streetViewLayerRef.current.addTo(map);
+      }
+    } else if (streetViewLayerRef.current && map.hasLayer(streetViewLayerRef.current)) {
+      map.removeLayer(streetViewLayerRef.current);
+    }
+  }, [shouldShowBlueStreets]);
+
+  // Pan existing base map smoothly when user clicks "Odakla" inside Street View
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !focusStreetViewTarget) return;
+    map.panTo([focusStreetViewTarget.lat, focusStreetViewTarget.lng], { animate: true });
+    if (map.getZoom() < 16) {
+      map.setZoom(17, { animate: true });
+    }
+  }, [focusStreetViewTarget]);
+
+  // Render Drop Target Ring & Live Rotating Pegman Camera Cone on Existing Base Map
+  useEffect(() => {
+    const group = streetViewMarkerGroupRef.current;
+    if (!group) return;
+    group.clearLayers();
+
+    if (isDraggingPegman && pegmanHoverLatLng) {
+      const targetIcon = L.divIcon({
+        className: 'sv-drop-target-wrapper',
+        html: `
+          <div style="width: 34px; height: 34px; margin-left: -17px; margin-top: -17px; border-radius: 9999px; border: 3px solid #38bdf8; background: rgba(14, 165, 233, 0.25); box-shadow: 0 0 18px rgba(56, 189, 248, 0.95); display: flex; align-items: center; justify-content: center;">
+            <div style="width: 10px; height: 10px; border-radius: 9999px; background: #fbbf24; border: 2px solid #0f172a;"></div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+      L.marker([pegmanHoverLatLng.lat, pegmanHoverLatLng.lng], {
+        icon: targetIcon,
+        pane: 'cadVertexPane',
+        interactive: false
+      }).addTo(group);
+    } else if (activeStreetViewCamera) {
+      const heading = activeStreetViewCamera.heading ?? 0;
+      const activePinIcon = L.divIcon({
+        className: 'sv-active-pin-wrapper',
+        html: `
+          <div style="position: relative; width: 76px; height: 76px; margin-left: -38px; margin-top: -38px; pointer-events: none;">
+            <svg viewBox="0 0 76 76" style="position: absolute; inset: 0; width: 76px; height: 76px; transform: rotate(${heading}deg); transition: transform 60ms linear;">
+              <defs>
+                <radialGradient id="svFovGrad" cx="50%" cy="50%" r="50%">
+                  <stop offset="10%" stop-color="#38bdf8" stop-opacity="0.72" />
+                  <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+                </radialGradient>
+              </defs>
+              <path d="M38 38 L16 6 A34 34 0 0 1 60 6 Z" fill="url(#svFovGrad)" />
+            </svg>
+            <div style="position: absolute; left: 50%; top: 50%; width: 30px; height: 30px; margin-left: -15px; margin-top: -15px; border-radius: 9999px; background: #f59e0b; border: 2.5px solid #020617; box-shadow: 0 0 16px rgba(245, 158, 11, 0.95); display: flex; align-items: center; justify-content: center;">
+              <svg viewBox="0 0 24 24" style="width: 17px; height: 17px; fill: #020617;">
+                <circle cx="12" cy="5.5" r="2.7" />
+                <path d="M9.2 9.5h5.6c1 0 1.7.8 1.7 1.8v4.2h-1.8v5h-5.4v-5H7.5v-4.2c0-1 .7-1.8 1.7-1.8z" />
+              </svg>
+            </div>
+          </div>
+        `,
+        iconSize: [0, 0]
+      });
+      L.marker([activeStreetViewCamera.lat, activeStreetViewCamera.lng], {
+        icon: activePinIcon,
+        pane: 'cadVertexPane',
+        interactive: false
+      }).addTo(group);
+    }
+  }, [isDraggingPegman, pegmanHoverLatLng, activeStreetViewCamera]);
+
+  // Handle Pegman Drag-and-Drop to Street View
+  const handlePegmanPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let lastX = e.clientX;
+      let didDrag = false;
+      let latestLatLng: { lat: number; lng: number } | null = null;
+
+      const computeMapLatLng = (clientX: number, clientY: number) => {
+        const map = mapRef.current;
+        const mapEl = document.getElementById('map-element');
+        if (!map || !mapEl) return null;
+        const rect = mapEl.getBoundingClientRect();
+        if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+          return null;
+        }
+        const pt = L.point(clientX - rect.left, clientY - rect.top);
+        const ll = map.containerPointToLatLng(pt);
+        return { lat: ll.lat, lng: ll.lng };
+      };
+
+      const onMove = (mv: PointerEvent) => {
+        const dist = Math.hypot(mv.clientX - startX, mv.clientY - startY);
+        if (!didDrag && dist > 8) {
+          didDrag = true;
+          setIsDraggingPegman(true);
+          setIsStreetViewClickMode(false);
+        }
+        if (didDrag) {
+          const vx = mv.clientX - lastX;
+          lastX = mv.clientX;
+          const clampedTilt = Math.max(-28, Math.min(28, vx * 1.9));
+          setPegmanTiltDeg(clampedTilt);
+          setPegmanScreenPos({ x: mv.clientX, y: mv.clientY });
+          latestLatLng = computeMapLatLng(mv.clientX, mv.clientY);
+          setPegmanHoverLatLng(latestLatLng);
+        }
+      };
+
+      const onUp = (upEv: PointerEvent) => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+
+        if (didDrag) {
+          const dropLatLng = computeMapLatLng(upEv.clientX, upEv.clientY) || latestLatLng;
+          setIsDraggingPegman(false);
+          setPegmanScreenPos(null);
+          setPegmanTiltDeg(0);
+          setPegmanHoverLatLng(null);
+          if (dropLatLng) {
+            onOpenStreetView?.(dropLatLng);
+          }
+        } else {
+          // Click toggles Street View Click-on-Blue-Street mode
+          setIsStreetViewClickMode((prev) => !prev);
+        }
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    },
+    [onOpenStreetView]
+  );
+
   // Render Main Cadastral Boundary (with CAD Vertex Editing when unsubdivided)
   useEffect(() => {
     const map = mapRef.current;
@@ -1079,7 +1270,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       }).addTo(mainLayerGroupRef.current);
 
       geoLayer.on('click', (e) => {
-        if (isPickingTkgmRef.current) return;
+        if (isStreetViewClickModeRef.current || isPickingTkgmRef.current) return;
         if (activeDrawToolRef.current === 'delete') {
           L.DomEvent.stopPropagation(e);
           onClearMainPolygonRef.current?.();
@@ -1204,7 +1395,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       }).addTo(secondaryParcelsGroupRef.current!);
 
       geoLayer.on('click', (e) => {
-        if (isPickingTkgmRef.current) return;
+        if (isStreetViewClickModeRef.current || isPickingTkgmRef.current) return;
         if (activeDrawToolRef.current === 'delete') {
           L.DomEvent.stopPropagation(e);
           onDeleteSecondaryParcelRef.current?.(sp.id);
@@ -1406,7 +1597,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
       });
 
       lineLayer.on('click', (e) => {
-        if (isPickingTkgmRef.current) return;
+        if (isStreetViewClickModeRef.current || isPickingTkgmRef.current) return;
         if (activeDrawToolRef.current === 'delete') {
           L.DomEvent.stopPropagation(e);
           onDeleteRoadLineRef.current?.(i);
@@ -1736,7 +1927,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
 
       // Click: Sil, Obje Sor veya Parsel Seç
       geoJsonLayer.on('click', (e) => {
-        if (isPickingTkgmRef.current) return;
+        if (isStreetViewClickModeRef.current || isPickingTkgmRef.current) return;
         L.DomEvent.stopPropagation(e);
         if (activeDrawToolRef.current === 'delete') {
           onDeleteGeneratedParcelRef.current?.(p.id);
@@ -3166,6 +3357,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                 title: 'Parsel Jeoteknik Zemin Alan Bilgisini (TBDY 2018) Aç / Kapat',
                 icon: HardHat,
                 activeColor: 'text-amber-400'
+              },
+              {
+                key: 'showStreetViewCoverage',
+                label: 'Mavi Sokaklar (SV)',
+                title: 'Sokak Görünümü (Street View) Olan Sokakları Mavi Renkle Göster',
+                icon: Navigation,
+                activeColor: 'text-sky-400'
               }
             ].map((item) => {
               const isChecked =
@@ -3175,6 +3373,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                   ? (mapSettings.showSlopeInfo ?? true)
                   : item.key === 'showSoilInfo'
                   ? (mapSettings.showSoilInfo ?? true)
+                  : item.key === 'showStreetViewCoverage'
+                  ? !!mapSettings.showStreetViewCoverage
                   : !!(mapSettings as any)[item.key];
               const Icon = item.icon;
               return (
@@ -4041,6 +4241,23 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               </button>
             )}
 
+            {onOpenStreetView && (
+              <button
+                type="button"
+                onClick={() =>
+                  onOpenStreetView({
+                    lat: inspectedObject.latlng[0],
+                    lng: inspectedObject.latlng[1]
+                  })
+                }
+                className="h-7 px-2.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/30 text-amber-200 text-[10.5px] font-semibold flex items-center justify-center gap-1 transition"
+                title="Bu noktada Sokak Görünümünü aç"
+              >
+                <Navigation className="w-3 h-3" />
+                <span>Sokak Görünümü</span>
+              </button>
+            )}
+
             {inspectedObject.kind !== 'map-point' && (
               <button
                 type="button"
@@ -4062,6 +4279,118 @@ export const MapContainer: React.FC<MapContainerProps> = ({
                 <Trash2 className="w-3 h-3" />
                 <span>Sil</span>
               </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Sağ Taraf Sokak Görünümü (Pegman / Adam İkonu) Dock */}
+      <div className="no-print fixed right-4 top-1/2 -translate-y-1/2 z-[999] flex flex-col items-center gap-1.5 select-none">
+        <div className="apple-glass rounded-2xl p-1.5 border border-white/15 shadow-[0_12px_36px_rgba(0,0,0,0.5)] flex flex-col items-center gap-1.5">
+          {/* Sürükle-Bırak Adam (Pegman) İkonu */}
+          <button
+            type="button"
+            onPointerDown={handlePegmanPointerDown}
+            className={`w-10 h-11 rounded-xl flex flex-col items-center justify-center transition cursor-grab active:cursor-grabbing touch-none relative group ${
+              isDraggingPegman
+                ? 'bg-amber-400/30 border border-amber-400 scale-95 opacity-60'
+                : isStreetViewClickMode
+                ? 'bg-sky-500 text-white border border-sky-300 shadow-[0_0_16px_rgba(56,189,248,0.65)]'
+                : 'bg-amber-500/15 hover:bg-amber-500/30 border border-amber-400/35 hover:border-amber-300'
+            }`}
+            title="Sokak Görünümü (Adam): Tıklayınca mavi yolları gösterir, sürükleyip bırakınca sokağa gider"
+          >
+            {/* Classic Pegman Person Silhouette SVG */}
+            <svg
+              viewBox="0 0 24 24"
+              className={`w-6 h-6 transition-transform group-hover:scale-110 ${
+                isStreetViewClickMode ? 'fill-white' : 'fill-amber-400 drop-shadow-[0_2px_4px_rgba(0,0,0,0.5)]'
+              }`}
+            >
+              <circle cx="12" cy="5.2" r="2.9" />
+              <path d="M8.5 9.2h7c1.1 0 2 .9 2 2v4.3c0 .6-.5 1-1 1h-1.2v4.8c0 .6-.4 1-1 1h-1.6c-.5 0-.7-.4-.7-.9v-3.9h-1v3.9c0 .5-.2.9-.7.9H9.7c-.6 0-1-.4-1-1v-4.8H7.5c-.5 0-1-.4-1-1v-4.3c0-1.1.9-2 2-2z" />
+            </svg>
+            <span
+              className={`text-[8px] font-bold tracking-tight leading-none mt-0.5 ${
+                isStreetViewClickMode ? 'text-white' : 'text-amber-300'
+              }`}
+            >
+              SOKAK
+            </span>
+          </button>
+
+          {/* Mavi Sokaklar Kapsama Katmanı Sabit Aç/Kapat */}
+          <button
+            type="button"
+            onClick={() => {
+              if (onChangeMapSettings) {
+                onChangeMapSettings({
+                  ...mapSettings,
+                  showStreetViewCoverage: !mapSettings.showStreetViewCoverage
+                });
+              }
+            }}
+            className={`w-10 h-7 rounded-xl flex items-center justify-center transition border text-[10px] font-bold ${
+              shouldShowBlueStreets
+                ? 'bg-sky-500/25 text-sky-300 border-sky-400/50 shadow-[0_0_12px_rgba(56,189,248,0.35)]'
+                : 'bg-white/[0.05] hover:bg-white/15 text-slate-400 hover:text-sky-300 border-white/10'
+            }`}
+            title={
+              shouldShowBlueStreets
+                ? 'Sokak Görünümü mavi sokak çizgileri açık (Kapatmak için tıklayın)'
+                : 'Sokak Görünümü olan sokakları haritada mavi göster'
+            }
+          >
+            <Navigation className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {/* Sokak Görünümü Tıkla-Aç Modu Bilgilendirme Çubuğu */}
+      {isStreetViewClickMode && (
+        <div className="no-print fixed top-16 left-1/2 -translate-x-1/2 z-[1002] h-9 px-4 bg-sky-500 text-slate-950 font-semibold rounded-full flex items-center gap-2.5 shadow-[0_12px_36px_rgba(14,165,233,0.45)] animate-in fade-in slide-in-from-top-2">
+          <span className="w-2.5 h-2.5 rounded-full bg-slate-950 animate-ping" />
+          <span className="text-xs font-bold whitespace-nowrap">
+            Sokak Görünümü Aktif: Mavi renkli sokaklara tıklayın (veya adam ikonunu sürükleyin)
+          </span>
+          <button
+            type="button"
+            onClick={() => setIsStreetViewClickMode(false)}
+            className="h-6 px-2.5 bg-slate-950 text-sky-300 hover:bg-slate-900 text-[11px] font-bold rounded-full flex items-center gap-1 transition"
+          >
+            <X className="w-3 h-3 stroke-[3]" />
+            <span>Kapat</span>
+          </button>
+        </div>
+      )}
+
+      {/* Sürüklenen Pegman (Adam) İmleç Takipçisi */}
+      {isDraggingPegman && pegmanScreenPos && (
+        <div
+          className="no-print fixed z-[1200] pointer-events-none select-none"
+          style={{
+            left: `${pegmanScreenPos.x}px`,
+            top: `${pegmanScreenPos.y}px`,
+            transform: 'translate(-50%, -88%)'
+          }}
+        >
+          <div className="flex flex-col items-center">
+            <div
+              className="transition-transform duration-75"
+              style={{ transform: `rotate(${pegmanTiltDeg}deg)` }}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                className="w-10 h-10 fill-amber-400 stroke-slate-950 stroke-[1.2] drop-shadow-[0_6px_14px_rgba(0,0,0,0.65)]"
+              >
+                <circle cx="12" cy="5.2" r="2.9" />
+                <path d="M8.5 9.2h7c1.1 0 2 .9 2 2v4.3c0 .6-.5 1-1 1h-1.2v4.8c0 .6-.4 1-1 1h-1.6c-.5 0-.7-.4-.7-.9v-3.9h-1v3.9c0 .5-.2.9-.7.9H9.7c-.6 0-1-.4-1-1v-4.8H7.5c-.5 0-1-.4-1-1v-4.3c0-1.1.9-2 2-2z" />
+              </svg>
+            </div>
+            {pegmanHoverLatLng && (
+              <div className="mt-1 px-2 py-0.5 rounded-full bg-slate-950/90 border border-sky-400/60 text-[10px] font-mono font-bold text-sky-300 shadow-lg whitespace-nowrap">
+                {pegmanHoverLatLng.lat.toFixed(5)}, {pegmanHoverLatLng.lng.toFixed(5)} · Bırak
+              </div>
             )}
           </div>
         </div>
